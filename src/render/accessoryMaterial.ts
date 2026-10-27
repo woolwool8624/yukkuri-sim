@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { ToonColors } from './toonMaterial';
+import { DARKEN_GLSL, type ToonColors } from './toonMaterial';
 import { GROUND_ACCESSORY, groundClampGlsl } from './ground';
 
 /**
@@ -30,6 +30,7 @@ const fragmentShader = /* glsl */ `
   uniform float uThreshold2;
   uniform float uSoftness;
   uniform float uRim;
+  ${DARKEN_GLSL}
   varying vec3 vNormalW;
   varying vec3 vPosW;
   void main() {
@@ -44,7 +45,7 @@ const fragmentShader = /* glsl */ `
     vec3 v = normalize(cameraPosition - vPosW);
     float rim = pow(1.0 - abs(dot(n, v)), 3.0);
     col = mix(col, uRimColor, rim * uRim);
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(darken(col), 1.0);
     #include <colorspace_fragment>
   }
 `;
@@ -66,6 +67,8 @@ export function createAccessoryMaterial(
       uThreshold: b.uThreshold,
       uThreshold2: b.uThreshold2,
       uSoftness: b.uSoftness,
+      // 暗がりに沈める量はこの材質のもの（体と共有すると、同じ作り方の森の木やケースの皿まで暗くなる）
+      uDarken: { value: 0 },
     },
     vertexShader: vertexShader(opts.ground ?? GROUND_ACCESSORY),
     fragmentShader,

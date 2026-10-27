@@ -7,6 +7,17 @@ export interface ToonColors {
   rim: string;
 }
 
+/**
+ * 暗がりに沈める（森の大木のうろの中。入口から見える所はこの影に沈んで見える）：uDarken 0〜1 で、色にこの色を掛ける（青みの濃い影）。
+ * uDarken は材質ごとに持つ（ゆっくりの部品だけに入れる：Yukkuri が体の下の部品の材質に配る）
+ */
+export const DARKEN_GLSL = /* glsl */ `
+  uniform float uDarken;
+  vec3 darken(vec3 col) {
+    return col * mix(vec3(1.0), vec3(0.24, 0.23, 0.3), uDarken);
+  }
+`;
+
 export const DEFAULT_SKIN: ToonColors = {
   lit: '#f6cfa3',
   shade: '#ecb98d',
@@ -42,6 +53,7 @@ const fragmentShader = /* glsl */ `
   uniform float uThreshold2;
   uniform float uSoftness;
   uniform float uRim;
+  ${DARKEN_GLSL}
   uniform float uContactShade;
   // 焦げ（足焼き）：焦げの強さ 0〜1 と、焦げる高さ（静止形状の底から、高さに対する比）。静止形状の底と高さ
   uniform float uBurn;
@@ -102,7 +114,7 @@ const fragmentShader = /* glsl */ `
       col = col * (1.0 - t.a * inside) + t.rgb * inside;  // 乗算済みアルファ
     }
 
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(darken(col), 1.0);
     #include <colorspace_fragment>
   }
 `;
@@ -120,6 +132,7 @@ export function createToonMaterial(colors: ToonColors = DEFAULT_SKIN): THREE.Sha
       uSoftness: { value: 0.06 },
       uRim: { value: 0.18 },
       uContactShade: { value: 0.08 },
+      uDarken: { value: 0 },
       uBurn: { value: 0 },
       uBurnTop: { value: 0.1 },
       uRestMinY: { value: -0.5 },

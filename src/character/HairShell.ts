@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Accessory, AttachContext, OutfitParams } from './types';
 import { GROUND_HAIR, groundClampGlsl } from '../render/ground';
+import { DARKEN_GLSL } from '../render/toonMaterial';
 
 /**
  * 髪：体の描画メッシュを法線方向へ少し浮かせた「殻」に、髪の形を貼る。
@@ -103,6 +104,7 @@ const fragmentShader = /* glsl */ `
   uniform float uThreshold;
   uniform float uThreshold2;
   uniform float uSoftness;
+  ${DARKEN_GLSL}
   varying vec3 vRest;
   varying vec3 vNormalW;
   varying vec3 vPosW;
@@ -117,7 +119,7 @@ const fragmentShader = /* glsl */ `
     col = mix(col, uLit, tLit);
     col = mix(col, uLight, t.g);       // ツヤ
     col = mix(uLine, col, t.r);        // 毛の線・外周の線（r が小さいほど線）
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(darken(col), 1.0);
     #include <colorspace_fragment>
   }
 `;
@@ -166,6 +168,7 @@ export class HairShell implements Accessory {
         uThreshold: b.uThreshold,
         uThreshold2: b.uThreshold2,
         uSoftness: b.uSoftness,
+        uDarken: { value: 0 },
       },
       vertexShader,
       fragmentShader,

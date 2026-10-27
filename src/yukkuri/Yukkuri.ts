@@ -37,6 +37,8 @@ import { faceFrame, TextFx } from './fx';
 import { FACE_RECT } from '../face/types';
 import { Silhouette } from '../render/silhouette';
 
+/** 暗がりに沈める量が目標へ近づく割合（描画 1 回あたり） */
+const DARKEN_RATE = 0.1;
 /** 物理メッシュと描画メッシュの細かさ */
 const PHYS_DETAIL = 7;    // 約640頂点
 const RENDER_DETAIL = 32; // 約1万頂点
@@ -165,6 +167,8 @@ export class Yukkuri {
   private readonly shadow = createBlobShadow();
   /** 森の洞穴に入ったら、岩ごしに形だけ見せる（地面の影はそのまま） */
   private readonly silhouette = new Silhouette(this.root, [this.shadow]);
+  /** 暗がりに沈める量（0〜1。大木のうろに入ると少しずつ暗くなる） */
+  private darken = 0;
   private readonly outline: THREE.Mesh;
   private restHeight = 1;
   private time = 0;
@@ -518,11 +522,22 @@ export class Yukkuri {
 
   /** 描画直前に呼ぶ */
   sync(): void {
-    // 洞穴の中ならシルエット（おたべなさいの最中・後は、割れた半分が材質を引き継ぐので差し替えない）
+    // 洞穴（大木のうろ）の中：入口から直接見える所は暗い影に沈め、幹に隠れた所だけシルエット（指示：この見え方で固定）
+    // （おたべなさいの最中・後は、割れた半分が材質を引き継ぐのでシルエットを重ねない）
     const at = this.body.center;
-    this.silhouette.update(!!this.stage?.inCave(at.x, at.z) && !this.otabe.active && !this.otabe.split);
-    // 地面の影は消す（シルエットの後に描かれ、足元に薄くかぶった）
-    this.shadow.visible = !this.silhouette.on;
+    const inCave = !!this.stage?.inCave(at.x, at.z);
+    this.silhouette.update(inCave && !this.otabe.active && !this.otabe.split);
+    this.darken += ((inCave ? 1 : 0) - this.darken) * DARKEN_RATE;
+    if (this.darken < 1e-3) this.darken = 0;
+    this.root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        const u = (m as THREE.ShaderMaterial).uniforms?.uDarken;
+        if (u) u.value = this.darken;
+      }
+    });
+    // 地面の影は消す（シルエットの後に描かれて足元に薄くかぶる。影に沈めるときは暗いうろの床に明るく浮く）
+    this.shadow.visible = !inCave;
     // 二つに割れた後は、固めた半分を動かすだけ（体の形・装飾は更新しない）
     if (this.otabe.split) {
       this.otabe.sync();
