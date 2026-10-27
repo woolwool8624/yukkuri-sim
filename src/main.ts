@@ -11,13 +11,16 @@ const FIXED_DT = 1 / 60;
 const MAX_STEPS_PER_FRAME = 4;
 
 const container = document.getElementById('app')!;
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// ステンシルは、森の洞穴の中のゆっくりをシルエットで描くのに使う
+const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG);
 scene.fog = new THREE.Fog(BG, 8, 20);
+
+let skyColor = BG;
 
 const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 100);
 
@@ -176,6 +179,13 @@ renderer.setAnimationLoop(() => {
   // 戻すと、上限の角度まで引き戻される
   controls.maxPolarAngle = view.freeCamera || ctrlFreeCamera ? Math.PI : CAMERA_MAX_POLAR;
   controls.update();
-  stage.update(camera.position);
+  stage.update(camera, controls.target);
+  // 空と霧の色はマップごと
+  const sky = stage.sky;
+  if (sky !== skyColor) {
+    skyColor = sky;
+    (scene.background as THREE.Color).set(sky);
+    scene.fog!.color.set(sky);
+  }
   renderer.render(scene, camera);
 });

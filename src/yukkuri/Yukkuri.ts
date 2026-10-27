@@ -35,6 +35,7 @@ import type { Stage } from '../world/Stage';
 import { Voice, type LineKey } from './lines';
 import { faceFrame, TextFx } from './fx';
 import { FACE_RECT } from '../face/types';
+import { Silhouette } from '../render/silhouette';
 
 /** 物理メッシュと描画メッシュの細かさ */
 const PHYS_DETAIL = 7;    // 約640頂点
@@ -162,6 +163,8 @@ export class Yukkuri {
   private readonly renderUnit: Float32Array;
   private readonly skin: Skin;
   private readonly shadow = createBlobShadow();
+  /** 森の洞穴に入ったら、岩ごしに形だけ見せる（地面の影はそのまま） */
+  private readonly silhouette = new Silhouette(this.root, [this.shadow]);
   private readonly outline: THREE.Mesh;
   private restHeight = 1;
   private time = 0;
@@ -515,6 +518,11 @@ export class Yukkuri {
 
   /** 描画直前に呼ぶ */
   sync(): void {
+    // 洞穴の中ならシルエット（おたべなさいの最中・後は、割れた半分が材質を引き継ぐので差し替えない）
+    const at = this.body.center;
+    this.silhouette.update(!!this.stage?.inCave(at.x, at.z) && !this.otabe.active && !this.otabe.split);
+    // 地面の影は消す（シルエットの後に描かれ、足元に薄くかぶった）
+    this.shadow.visible = !this.silhouette.on;
     // 二つに割れた後は、固めた半分を動かすだけ（体の形・装飾は更新しない）
     if (this.otabe.split) {
       this.otabe.sync();

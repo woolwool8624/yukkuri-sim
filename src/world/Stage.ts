@@ -2,16 +2,18 @@ import * as THREE from 'three';
 import type { BoxCollider } from '../physics/SoftBody';
 import { loadJSON, saveJSON } from '../platform/storage';
 import { Cage } from './cage';
+import { Forest } from './forest';
 import type { FloorId } from './floorTextures';
 
 /**
  * マップ（ゆっくりのいる場所）。地面はどのマップも高さ 0 の平らな面（指示）。
  *   平地（open）… これまでの何もない地面。行ける範囲の限りなし
  *   飼育ケース（cage）… ガラスの水槽の中（cage.ts）。行ける範囲はケースの中だけ
+ *   森（forest）… 木に囲まれた広場（forest.ts）。洞穴に入るとシルエットだけになる
  * マップごとに、置く物（object）・当たる物（colliders。体を押し返す）・行ける範囲（area）を持つ。
  * 選んだマップと床材は保存する
  */
-export type MapId = 'open' | 'cage';
+export type MapId = 'open' | 'cage' | 'forest';
 export type { FloorId };
 
 /** 行ける範囲（地面の上の長方形。m） */
@@ -25,6 +27,7 @@ export interface Area {
 export const MAPS: { id: MapId; label: string }[] = [
   { id: 'open', label: '平地' },
   { id: 'cage', label: '飼育ケース' },
+  { id: 'forest', label: '森' },
 ];
 export const FLOORS: { id: FloorId; label: string }[] = [
   { id: 'newspaper', label: '新聞紙' },
@@ -33,6 +36,8 @@ export const FLOORS: { id: FloorId; label: string }[] = [
 ];
 
 const STORAGE_KEY = 'stage';
+/** 平地の空の色（霧） */
+const OPEN_SKY = '#f7f4ef';
 
 export class Stage {
   readonly object = new THREE.Group();
@@ -43,6 +48,7 @@ export class Stage {
   private mapId: MapId = 'open';
   private floorId: FloorId = 'newspaper';
   private cage: Cage | null = null;
+  private forest: Forest | null = null;
 
   constructor(private readonly bodyMaterial: THREE.ShaderMaterial, private readonly outlineMaterial: THREE.ShaderMaterial) {
     const saved = loadJSON<{ map?: MapId; floor?: FloorId }>(STORAGE_KEY);
@@ -74,7 +80,7 @@ export class Stage {
 
   /** 行ける範囲（限りがなければ null） */
   get area(): Readonly<Area> | null {
-    return this.cage?.area ?? null;
+    return this.cage?.area ?? this.forest?.area ?? null;
   }
 
   /** 餌皿（飼育ケースのとき。中心・餌を置く輪・内側の底の高さ） */
@@ -87,9 +93,9 @@ export class Stage {
     return this.cage?.waterDish ?? null;
   }
 
-  /** といれ（マップごとに形が違う。今は飼育ケースの砂のトレイだけ）：中心と横・奥行き（m）。なければ null */
+  /** といれ（マップごとに形が違う。飼育ケースは砂のトレイ、森は木の根元のくぼみ）：中心と横・奥行き（m）。なければ null */
   get toilet(): { x: number; z: number; w: number; d: number } | null {
-    return this.cage?.toilet ?? null;
+    return this.cage?.toilet ?? this.forest?.toilet ?? null;
   }
 
   /** 点（x, z）がといれの中か（縁から margin m より内側） */
@@ -100,7 +106,17 @@ export class Stage {
 
   /** 置いてある物（皿など。体が乗れない所）：中心と半径（m） */
   get props(): readonly { x: number; z: number; r: number }[] {
-    return this.cage?.props ?? [];
+    return this.cage?.props ?? this.forest?.props ?? [];
+  }
+
+  /** 点（x, z）が洞穴の中か（森のとき。中にいるとシルエットだけが見える） */
+  inCave(x: number, z: number): boolean {
+    return this.forest?.inCave(x, z) ?? false;
+  }
+
+  /** 空と遠くの色（霧） */
+  get sky(): string {
+    return this.forest?.sky ?? OPEN_SKY;
   }
 
   /**
@@ -111,9 +127,21 @@ export class Stage {
     if (!a) return false;
     const x = THREE.MathUtils.clamp(p.x, a.minX + margin, a.maxX - margin);
     const z = THREE.MathUtils.clamp(p.z, a.minZ + marginZ, a.maxZ - marginZ);
-    const moved = x !== p.x || z !== p.z;
+    let moved = x !== p.x || z !== p.z;
     p.x = x;
     p.z = z;
+    // 森：木・切り株・岩・倒木の上なら、その外へ（体の半径ほど離す。飼育ケースの皿は、横付けして食べるので寄せない）
+    if (this.forest) {
+      const keep = margin / 1.5;
+      for (const o of this.forest.props) {
+        const dx = p.x - o.x, dz = p.z - o.z, d = Math.hypot(dx, dz), r = o.r + keep;
+        if (d >= r) continue;
+        const k = d > 1e-6 ? r / d : 1;
+        p.x = o.x + (d > 1e-6 ? dx * k : r);
+        p.z = o.z + dz * k;
+        moved = true;
+      }
+    }
     return moved;
   }
 
@@ -138,8 +166,9 @@ export class Stage {
   }
 
   /** 毎フレーム（カメラの位置で見え方を変える物があれば） */
-  update(camera: THREE.Vector3): void {
-    this.cage?.update(camera);
+  update(camera: THREE.Camera, target?: THREE.Vector3): void {
+    this.cage?.update(camera.position);
+    this.forest?.update(camera, target);
   }
 
   private build(id: MapId): void {
@@ -149,11 +178,20 @@ export class Stage {
       this.cage.dispose();
       this.cage = null;
     }
+    if (this.forest) {
+      this.object.remove(this.forest.object);
+      this.forest.dispose();
+      this.forest = null;
+    }
     this.colliders.length = 0;
     if (id === 'cage') {
       this.cage = new Cage(this.bodyMaterial, this.outlineMaterial, this.floorId);
       this.object.add(this.cage.object);
       this.colliders.push(...this.cage.colliders);
+    } else if (id === 'forest') {
+      this.forest = new Forest(this.bodyMaterial, this.outlineMaterial);
+      this.object.add(this.forest.object);
+      this.colliders.push(...this.forest.colliders);
     }
   }
 
