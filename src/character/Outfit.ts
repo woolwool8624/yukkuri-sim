@@ -217,9 +217,10 @@ export class Outfit {
   /**
    * surfacePointAt の頂点の番号（vertexPoint で今の位置を読む）。求められないときは -1。
    * minNormalY：法線の上下の成分がこれより下向きの所（地面を向いている所）は選ばない。
-   * azWeight：高さの差に足す、向きの差（ラジアン）の重み（大きいほど向き az の線から外れない）
+   * azWeight：高さの差に足す、向きの差（ラジアン）の重み（大きいほど向き az の線から外れない）。
+   * side：1 / -1 なら、向き az から片側（向きの差がその符号の側）だけを探す（0 なら両側）
    */
-  surfaceIndexAt(az: number, azRange: number, maxHeight: number, targetY: number, minNormalY = -0.3, azWeight = 0.05): number {
+  surfaceIndexAt(az: number, azRange: number, maxHeight: number, targetY: number, minNormalY = -0.3, azWeight = 0.05, side = 0): number {
     const ix = this.index;
     if (ix.fx.length === 0) return -1;
     this.refreshArrays();
@@ -227,9 +228,10 @@ export class Outfit {
     const p = new THREE.Vector3(), n = new THREE.Vector3();
     let best = -1, bs = Infinity;
     for (let i = 0; i < ix.az.length; i++) {
-      let da = Math.abs(ix.az[i] - az);
-      if (da > Math.PI) da = 2 * Math.PI - da;
+      const d = Math.atan2(Math.sin(ix.az[i] - az), Math.cos(ix.az[i] - az));
+      const da = Math.abs(d);
       if (da > azRange || ix.rest[3 * i + 1] > yMax) continue;
+      if (side !== 0 && d * side < -1e-3) continue;
       readVertex(this.ctx.pos, this.ctx.nrm, i, p, n);
       if (n.y < minNormalY) continue;
       const score = Math.abs(p.y - targetY) + da * azWeight;

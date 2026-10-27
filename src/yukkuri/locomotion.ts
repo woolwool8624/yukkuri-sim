@@ -144,6 +144,9 @@ const ROLL_SPEED = 1.8;
  */
 const LONG_BODY = 1.4;
 const RISE_SPEED = 1.2;
+/** 寝転び終えて体も止まったことにする、体の向きの回る速さ（rad/s）と、回る速さをなめらかにする強さ */
+const SETTLED_SPIN = 0.25;
+const SPIN_SMOOTH = 8;
 /** 身ぶり（体操など）の姿勢を保つ強さ（小さいほど遅れてなめらかに追う） */
 const GESTURE_POSTURE = 0.25;
 /** 身ぶりで背骨を縦に曲げている間の、形に戻る強さの下限 */
@@ -388,9 +391,10 @@ export class Locomotion {
 
   /**
    * 横になる。立っていれば前（腹ばい）・後ろ（仰向け）へそのまま倒れ、
-   * 反対の体勢で横になっていれば、起き上がらずに寝返りで切り替える。移動中なら移動をやめる
+   * 反対の体勢で横になっていれば、起き上がらずに寝返りで切り替える。移動中なら移動をやめる。
+   * side：前後に長い体型が仰向けになるとき、横へ転がる向き（1 / -1。0 ならランダム。といれで塊の出る所を決めるのに使う）
    */
-  lieDown(pose: LyingPose, passive = false): void {
+  lieDown(pose: LyingPose, passive = false, side = 0): void {
     if (this.immobile && !passive) return;
     const b = this.body;
     this.knockQueue = 0; // つつかれて続けて転がる分は、ほかの指示が来たらやめる
@@ -422,7 +426,7 @@ export class Locomotion {
     } else if (pose === 'supine' && this.isLongBody()) {
       // 前後に長い体：長い軸のまわりに横へ転がって、背中を地面につける
       this.poseCmd.copy(b.rotation);
-      this.startRoll(this.forwardAxis(b.rotation), Math.random() < 0.5 ? 1 : -1);
+      this.startRoll(this.forwardAxis(b.rotation), side !== 0 ? Math.sign(side) : Math.random() < 0.5 ? 1 : -1);
       this.rolledOnBack = true;
     } else {
       // 立ち姿から：今の向きのまま、前（腹ばい）・後ろ（仰向け）へ倒れる
@@ -621,6 +625,18 @@ export class Locomotion {
     return this.state === 'lying';
   }
 
+  /**
+   * 寝転び終えて、体も止まったか。寝転び終えた（resting）直後でも、体はまだ付いてきている途中のことがある
+   * （いもむし型が横に転がって仰向けになると、指令に着いた時点で体は 80° 遅れて転がっていた）。
+   * 遅れの大きさでは決めない（体型によっては止まっても 20〜40° 遅れたまま）。回る速さが SETTLED_SPIN より遅くなったら
+   */
+  get settled(): boolean {
+    return this.resting && this.spin < SETTLED_SPIN;
+  }
+  /** 体の向きの回る速さ（rad/s。なめらかにしたもの） */
+  private spin = 0;
+  private readonly prevRotation = new Quaternion();
+
   /** 横になっている体勢（倒れ込み中を含む）。立っていれば null */
   get lyingPose(): LyingPose | null {
     return this.isLying ? (this.lieSign > 0 ? 'prone' : 'supine') : null;
@@ -738,6 +754,9 @@ export class Locomotion {
     this.t += dt;
     this.velocity.subVectors(b.center, this.prevCenter).divideScalar(dt);
     this.prevCenter.copy(b.center);
+    // 体の向きの回る速さ（なめらかにする）
+    this.spin += (b.rotation.angleTo(this.prevRotation) / dt - this.spin) * Math.min(1, dt * SPIN_SMOOTH);
+    this.prevRotation.copy(b.rotation);
 
     // 目的地までの距離と向き
     const dx = this.target.x - b.center.x;

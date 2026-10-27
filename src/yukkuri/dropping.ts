@@ -59,6 +59,12 @@ const STORAGE_KEY = 'droppingExit';
 /** 仰向けの出口を探す範囲：背中側の ±この角度・床から（寝転ぶ前の）体の高さのこの比以下 */
 const SUPINE_AZ_RANGE = 1.6;
 const SUPINE_MAX_HEIGHT = 0.6;
+/**
+ * 仰向けの出口を探すときの、高さの差に足す向きの差の重み。横に広い体型（扁平型）は背中の左右の端の高さがほぼ同じで、
+ * 少しの揺れで左右どちらかの端が選ばれ、塊が横へ 1.2 m ずれる側が毎回変わった（といれで塊の行き先が見積もれない）。
+ * 重みを強くしたうえで、探す範囲を背中の真ん中から片側（体の左）だけにして、出る側を決める（左右対称の体型は真ん中が選ばれ、変わらない）
+ */
+const SUPINE_AZ_WEIGHT = 0.3;
 /** 出口の目印の大きさ（胴の半径に対する比） */
 const MARKER_SIZE = 0.06;
 /** 塊の一番太い所の横幅の半分・高さの半分・地面に寝そべる長さ（胴の半径に対する比） */
@@ -239,7 +245,8 @@ export class Dropping {
       const p = y.bodyMesh.geometry.getAttribute('position').array as Float32Array;
       let top = 0;
       for (let i = 1; i < p.length; i += 3) top = Math.max(top, p[i]);
-      y.outfit.surfacePointAt(Math.PI + e.side, SUPINE_AZ_RANGE, SUPINE_MAX_HEIGHT, top * e.supineHeight, pos, nrm);
+      const i = y.outfit.surfaceIndexAt(Math.PI + e.side, SUPINE_AZ_RANGE, SUPINE_MAX_HEIGHT, top * e.supineHeight, -0.3, SUPINE_AZ_WEIGHT, -1);
+      if (i >= 0) y.outfit.vertexPoint(i, pos, nrm);
     }
     return true;
   }
@@ -288,7 +295,8 @@ export class Dropping {
   /** 体が立って止まっているか、寝転がり終えて止まっているか */
   private settled(): boolean {
     const loco = this.y.locomotion;
-    return loco.idle || loco.resting;
+    // 寝転んでいるなら、体が姿勢に付いてくるまで（転がっている途中に出し始めると、宙から出てきた。いもむし型の仰向け）
+    return loco.idle || loco.settled;
   }
 
   /** 出し始める（出口を決めて、塊を作る） */
