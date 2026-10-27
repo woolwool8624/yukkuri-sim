@@ -147,6 +147,8 @@ const RISE_SPEED = 1.2;
 /** 寝転び終えて体も止まったことにする、体の向きの回る速さ（rad/s）と、回る速さをなめらかにする強さ */
 const SETTLED_SPIN = 0.25;
 const SPIN_SMOOTH = 8;
+/** 跳ね起きる（fastRise）ときの、起き上がる速さの倍率 */
+const FAST_RISE = 2.5;
 /** 身ぶり（体操など）の姿勢を保つ強さ（小さいほど遅れてなめらかに追う） */
 const GESTURE_POSTURE = 0.25;
 /** 身ぶりで背骨を縦に曲げている間の、形に戻る強さの下限 */
@@ -570,6 +572,7 @@ export class Locomotion {
       const rolled = Math.atan2(-up.dot(right), up.y);
       this.poseCmd.setFromAxisAngle(axis, rolled).multiply(new Quaternion().setFromAxisAngle(Y_AXIS, yaw));
       this.startRoll(axis, rolled > 0 ? -1 : 1, Math.abs(rolled));
+      if (this.fastRise) this.rollSpeed = ROLL_SPEED * FAST_RISE;
       this.rolledOnBack = false;
     } else {
       nearestPose(new Quaternion(), b.rotation, this.phaseTarget);
@@ -659,6 +662,8 @@ export class Locomotion {
 
   /** つつかれて転がって立ち上がった回数（足焼き：ホットプレートの上で立ったかを見るのに使う） */
   knockStands = 0;
+  /** 次に起き上がるのを速く（跳ね起きる。うんうんの後のすっきりー）。起き上がり終えたら戻す */
+  fastRise = false;
 
   /** 跳ねられない（足焼きで底が焼けた）：跳ねる指示でも這う */
   noHop = false;
@@ -888,9 +893,10 @@ export class Locomotion {
         // 少し縮んで踏ん張り、そのまま体を起こす
         act.uprightMin = LIE_POSTURE;
         squashGoal = 0.92;
-        const risen = this.rolling ? this.followRoll(dt) : this.followPose(dt, RISE_SPEED);
+        const risen = this.rolling ? this.followRoll(dt) : this.followPose(dt, RISE_SPEED * (this.fastRise ? FAST_RISE : 1));
         if (risen && (tilt < RECOVERED || this.reachedFor > 2)) {
           this.rolling = false;
+          this.fastRise = false;
           // 起き上がりきれなくても、倒れていれば「体勢を立て直す」が引き継ぐ（しばらくは倒れても寝転ばない）
           this.riseGrace = RISE_GRACE;
           this.go('idle');

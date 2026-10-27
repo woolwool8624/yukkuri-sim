@@ -18,7 +18,8 @@ import type { Yukkuri } from './Yukkuri';
  * 道筋は出し始めに決め、時間とともに先へ伸ばして見せる。出している間とすっきりーの間は、その場から歩き出さない。
  * 出したものは「片付ける」まで残る
  */
-type Phase = 'none' | 'wait' | 'push' | 'relief';
+/** rise：寝転んで出し終わり、跳ね起きている（立ってからすっきりー） */
+type Phase = 'none' | 'wait' | 'push' | 'rise' | 'relief';
 
 /** 出口の位置の調整値（体型ごとに保存する。調整パネルの「動きの調整」→「うんうんの出る位置」） */
 export interface ExitParams {
@@ -87,7 +88,22 @@ const HOP_FORWARD = 1.0;
 const HOP_UP = 2.4;
 /** 前に出したときに、すっきりーで後ろへ跳ねる強さ（前へ跳ねる HOP_FORWARD と同じ単位） */
 const HOP_BACK = 0.6;
+/**
+ * 跳ね起きた後に塊から離れる：塊の端から体の真ん中までの間（胴の半径に対する比）、離れる距離に足す分（m。起き上がった直後は
+ * 体がまだ塊の側へ 0.2 m ほど流れる）と、跳ねる強さ（離れる距離 1 m あたり・上下限。強さ 1 でおよそ 0.16 m 進む）
+ */
+const CLEAR_GAP = 1.1;
+const CLEAR_EXTRA = 0.2;
+const HOP_AWAY_PER_M = 6;
+const HOP_AWAY_MIN = 1.2;
+const HOP_AWAY_MAX = 4.5;
+/** 跳ね起きる：起き始めに塊から離れる向きへ跳ねる速さ（横・上。m/s）と、着いてからすっきりーで弾む高さ（いつもの跳ねる高さに対する比） */
+const RISE_JUMP_SIDE = 1.5;
+const RISE_JUMP_UP = 3.2;
+const RISE_BOUNCE = 0.6;
 const RELIEF_TIME = 3.2;
+/** 跳ね起きるのを待つ上限（秒） */
+const RISE_MAX = 5;
 /** 体勢が落ち着くのを待つ上限（秒） */
 const WAIT_MAX = 8;
 /** 置いておく数の上限（古いものから消す。といれへ運ぶと 1 つが 3 つに分かれるので多めに） */
@@ -172,6 +188,8 @@ export class Dropping {
   private t = 0;
   /** 今回は体の前から出す（出し終わっても前へ跳ねない） */
   private front = false;
+  /** 寝転んで出し終わったら跳ね起きてからすっきりー（といれで寝転んでしたとき） */
+  private springUp = false;
   /** 出口の位置の調整値と、体型ごとの保存 */
   readonly exit: ExitParams = { ...DEFAULT_EXIT };
   private readonly savedExit: Record<string, ExitParams>;
@@ -276,9 +294,10 @@ export class Dropping {
 
   /**
    * 出し始める（腹ばい・仰向けのままでもよい）。食べている・出している最中なら何もしない。
-   * front：いつもの背中側でなく、体の前の下から前へ出す（うんうんたいそうで後ろへ反ったとき）
+   * front：いつもの背中側でなく、体の前の下から前へ出す（うんうんたいそうで後ろへ反ったとき）。
+   * springUp：寝転んで出したら、出し終わって跳ね起きてから（うんうんたいそうと同じく）跳ねてすっきりー（といれで寝転んでしたとき）
    */
-  start(opts: { front?: boolean } = {}): boolean {
+  start(opts: { front?: boolean; springUp?: boolean } = {}): boolean {
     const y = this.y;
     if (this.active || y.feeding.active || y.exercise.active || y.vomit.active || y.rest.fainting) return false;
     y.rest.wake(true);
@@ -288,6 +307,7 @@ export class Dropping {
     this.phase = 'wait';
     this.t = 0;
     this.front = opts.front ?? false;
+    this.springUp = opts.springUp ?? false;
     if (this.settled()) this.begin();
     return true;
   }
@@ -478,12 +498,81 @@ export class Dropping {
       this.build(s);
       if (s.settle >= SETTLE_TIME && (s.detached < 0 || s.detached >= SETTLE_TIME)) this.settling.splice(i, 1);
     }
+    if (this.phase === 'rise') {
+      const loco = this.y.locomotion;
+      // 立って、着地してから（宙で起き終わってすぐにすっきりーにすると、跳ねた勢いのまま流れていった）
+      if ((!loco.isLying && !loco.tilted && this.y.body.groundContacts > 0 && this.t > 0.2) || this.t > RISE_MAX) this.relieved();
+      else if (loco.resting) loco.getUp();
+    }
     if (this.phase === 'relief' && this.t > RELIEF_TIME) this.finish();
   }
 
-  /** 出し終わった：震えを止め、一歩前へ跳ねて、感動した顔で「すっきりー」 */
+  /** 出したばかりの塊の真ん中（見えている所）から体へ向かう水平の向き（塊がなければ null。真上なら体の後ろ） */
+  private awayFromPile(): THREE.Vector3 | null {
+    const y = this.y;
+    const p = this.piles[this.piles.length - 1];
+    if (!p || p.pts.length < 2) return null;
+    let i0 = 0;
+    while (i0 < p.len.length - 1 && p.len[i0] < p.exitS) i0++;
+    const m = p.pts[Math.floor((i0 + p.pts.length) / 2)];
+    const dir = new THREE.Vector3(y.center.x - m.x, 0, y.center.z - m.z);
+    if (dir.lengthSq() < 1e-6) dir.copy(bodyFacing(y)).negate().setY(0);
+    return dir.lengthSq() < 1e-6 ? null : dir.normalize();
+  }
+
+  /**
+   * 跳ね起きた後に塊から離れる跳び方：体が出したばかりの塊にかかっていれば、近い方の端の外（端から CLEAR_GAP）へ届く向きと距離。
+   * かかっていなければ、塊の真ん中から離れる向きへ小さく（距離 0）。塊がなければ null
+   * （仰向けで出すと塊は体の前の足元から前へ伸び、起き上がると体が足の側へずれて塊の上に乗る。前は体ごと滑らせて下げていた）
+   */
+  private away(): { dir: THREE.Vector3; dist: number } | null {
+    const y = this.y;
+    const p = this.piles[this.piles.length - 1];
+    if (!p || p.pts.length < 2) return null;
+    // 見えている所（体の表面を出た所から先）
+    let i0 = 0;
+    while (i0 < p.len.length - 1 && p.len[i0] < p.exitS) i0++;
+    const a = p.pts[i0], b = p.pts[p.pts.length - 1];
+    const u = new THREE.Vector3(b.x - a.x, 0, b.z - a.z);
+    const L = u.length();
+    const R = y.shape.radius;
+    const dx = y.center.x - a.x, dz = y.center.z - a.z;
+    if (L > 1e-4) {
+      u.divideScalar(L);
+      const along = dx * u.x + dz * u.z, across = Math.abs(dx * u.z - dz * u.x);
+      if (across < R + p.w && along > -R * CLEAR_GAP && along < L + R * CLEAR_GAP) {
+        // 近い方の端の外へ（出だしの手前か、先の向こう）
+        const back = along < L / 2;
+        return { dir: back ? u.negate() : u, dist: back ? along + R * CLEAR_GAP : L + R * CLEAR_GAP - along };
+      }
+    }
+    const m = p.pts[Math.floor((i0 + p.pts.length) / 2)];
+    const dir = new THREE.Vector3(y.center.x - m.x, 0, y.center.z - m.z);
+    if (dir.lengthSq() < 1e-6) return null;
+    return { dir: dir.normalize(), dist: 0 };
+  }
+
+  /**
+   * 出し終わった：震えを止め、一歩前へ跳ねて、感動した顔で「すっきりー」。
+   * 寝転んで出していて springUp なら、先に跳ね起きる（立ったらもう一度ここへ来る）
+   */
   private relieved(): void {
     const y = this.y;
+    if (this.springUp && this.phase !== 'rise' && y.locomotion.isLying) {
+      this.phase = 'rise';
+      this.t = 0;
+      y.tremble = 0;
+      y.locomotion.fastRise = true;
+      // 塊に重なりそうでも寝返りでずれずに、そのまま起きる（寝返ってから起きると跳ね起きに見えない）。
+      // 起き始めに、塊から離れる向き（仰向けなら頭の側＝後ろ）へ跳ね、宙で体を起こして塊から離れた所に立って着く
+      // （指示：前へ起きてから後ろへ跳ねるのが不自然。前は起きてから跳ねて離れていた）
+      y.locomotion.getUp();
+      const dir = this.awayFromPile();
+      if (dir) y.impulse(dir.x * RISE_JUMP_SIDE, RISE_JUMP_UP, dir.z * RISE_JUMP_SIDE);
+      return;
+    }
+    const rose = this.phase === 'rise';
+    y.locomotion.fastRise = false;
     this.phase = 'relief';
     this.t = 0;
     y.tremble = 0;
@@ -494,7 +583,19 @@ export class Dropping {
     // 前に出したときは、前へ跳ねると塊に乗ってしまうので、後ろへ小さく跳ねて塊から離れる
     if (!y.locomotion.isLying) {
       const step = this.front ? -HOP_BACK : HOP_FORWARD;
-      y.impulse(facing.x * step, HOP_UP, facing.z * step);
+      const dir = facing.clone().multiplyScalar(step);
+      // 跳ね起きた後は、もう塊から離れて立っているので、その場で小さく弾む。
+      // それでも塊にかかっていれば（宙で離れきれなかった）、端の外へ届くように跳ねる
+      let up = HOP_UP;
+      if (rose) {
+        const off = this.away();
+        if (off && off.dist > 0) dir.copy(off.dir).multiplyScalar(THREE.MathUtils.clamp((off.dist + CLEAR_EXTRA) * HOP_AWAY_PER_M, HOP_AWAY_MIN, HOP_AWAY_MAX));
+        else {
+          dir.set(0, 0, 0);
+          up = HOP_UP * RISE_BOUNCE;
+        }
+      }
+      y.impulse(dir.x, up, dir.z);
     }
     const R = y.shape.radius;
     const pos = new THREE.Vector3(y.center.x, y.center.y + y.height * 0.5 + R * 0.25, y.center.z).addScaledVector(facing, R * 0.9);
@@ -503,6 +604,7 @@ export class Dropping {
 
   private finish(): void {
     this.phase = 'none';
+    this.y.locomotion.fastRise = false;
     this.y.tremble = 0;
     this.y.face.override = null;
     this.y.locomotion.release();
