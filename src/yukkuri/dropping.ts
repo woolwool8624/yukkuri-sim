@@ -117,6 +117,8 @@ const RING_STEP = 0.24;
 const PATH_DROP = 16;
 /** 地面から浮かせる高さ（ちらつき防止） */
 const FLOOR = 0.003;
+/** 運んで置いた餡子玉の縦のつぶれ（横の半径に対する高さの比） */
+const BALL_SQUASH = 0.82;
 
 const ANKO = { lit: '#7a4646', shade: '#55292d', deep: '#341519', rim: '#a8706a' };
 
@@ -154,6 +156,11 @@ interface Pile {
    * 一切れはもう分けない（運ぶ途中でやめてといれの外に置いたものは、次はまるごと 1 回で運ぶ）
    */
   profile?: [number, number];
+  /**
+   * 丸い餡子玉の半径（m）：口で運んで置いた一切れ（指示：運んだ後も元の尖った形のままなのは不自然）。
+   * 体積は元の塊のその範囲と同じ。玉は運び直しても玉のまま
+   */
+  ball?: number;
 }
 
 /** といれへ口で運ぶ：外にある塊 1 つの扱い（Cleanup が使う） */
@@ -405,7 +412,8 @@ export class Dropping {
             this.piles.splice(this.piles.indexOf(p), 1);
             this.dispose(p);
           } else this.build(p);
-          return (x, z, yaw) => this.placePiece(p, s1 - s0, profile, x, z, yaw);
+          const radius = p.ball ?? this.ballRadius(p, profile, s1 - s0);
+          return (x, z, yaw) => this.placePiece(p, radius, profile, x, z, yaw);
         },
       });
     }
@@ -428,12 +436,31 @@ export class Dropping {
     return p.pts[k].clone().lerp(p.pts[k + 1], f);
   }
 
-  /** 分けた一切れを（x, z）に向き yaw で置く（長さ len の真っすぐな塊。太さは元の塊の profile の範囲）。といれの中か外かは置いた所で決まる */
-  private placePiece(src: Pile, len: number, profile: [number, number], x: number, z: number, yaw: number): void {
+  /**
+   * 一切れを丸めた餡子玉の半径：元の塊の profile の範囲（長さ len）の体積と同じ体積の玉（少しつぶれて座る分を見込む）。
+   * 体積は、地面に寝そべった断面（横 w・高さ h の楕円に、太さの比を掛けたもの）を長さに沿って足したもの
+   */
+  private ballRadius(src: Pile, profile: [number, number], len: number): number {
+    const W = src.w * SETTLE_W, H = src.h * SETTLE_H;
+    const n = 24;
+    let vol = 0;
+    for (let i = 0; i < n; i++) {
+      const u = profile[0] + ((profile[1] - profile[0]) * (i + 0.5)) / n;
+      const th = END_RATIO + (1 - END_RATIO) * Math.pow(THREE.MathUtils.smoothstep(u, 0, THICK_AT), 0.8);
+      vol += Math.PI * W * th * H * th * (len / n);
+    }
+    // 玉は縦に BALL_SQUASH 倍につぶれている：体積 = 4/3 π r³ × BALL_SQUASH
+    return Math.cbrt((3 * vol) / (4 * Math.PI * BALL_SQUASH));
+  }
+
+  /** 運んだ一切れを（x, z）に丸い餡子玉（半径 radius）にして置く。といれの中か外かは置いた所で決まる */
+  private placePiece(src: Pile, radius: number, profile: [number, number], x: number, z: number, yaw: number): void {
     const dir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-    const a = new THREE.Vector3(x, src.h, z).addScaledVector(dir, -len / 2);
+    // 道筋は玉の差し渡し（汚れの判定・といれに置く所選び・運び直しで使う）
+    const len = radius * 2;
+    const a = new THREE.Vector3(x, radius * BALL_SQUASH, z).addScaledVector(dir, -len / 2);
     const pts: THREE.Vector3[] = [], lens: number[] = [];
-    const n = 12;
+    const n = 4;
     for (let i = 0; i <= n; i++) {
       pts.push(a.clone().addScaledVector(dir, (len * i) / n));
       lens.push((len * i) / n);
@@ -448,6 +475,7 @@ export class Dropping {
     const piece: Pile = {
       group, geometry, pts, len: lens, ground: 0, shown: len, settle: SETTLE_TIME, w: src.w, h: src.h,
       side: new THREE.Vector3(0, 1, 0).cross(dir).normalize(), detached: SETTLE_TIME, exitS: 0, toilet, cut: 0, profile,
+      ball: radius,
     };
     this.piles.push(piece);
     this.object.add(group);
@@ -671,6 +699,10 @@ export class Dropping {
 
   /** 今出ている長さまでの塊を作る。先は丸く閉じる */
   private build(p: Pile): void {
+    if (p.ball !== undefined) {
+      this.buildBall(p, p.ball);
+      return;
+    }
     const total = p.len[p.len.length - 1];
     const settle = p.settle < 0 ? 0 : THREE.MathUtils.smoothstep(p.settle, 0, SETTLE_TIME);
     const W = p.w * (1 + (SETTLE_W - 1) * settle), H = p.h * (1 + (SETTLE_H - 1) * settle);
@@ -752,6 +784,30 @@ export class Dropping {
     const g = p.geometry;
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setIndex(index);
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+  }
+
+  /** 丸い餡子玉：道筋の真ん中に、縦に少しつぶれた玉（底は地面で平らにつぶれる。表面に少しだけでこぼこ） */
+  private buildBall(p: Pile, r: number): void {
+    const c = p.pts[Math.floor(p.pts.length / 2)];
+    const src = new THREE.SphereGeometry(r, SIDES, 12);
+    const pos = src.getAttribute('position') as THREE.BufferAttribute;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const n = v.clone().normalize();
+      const bump = 1 + 0.04 * Math.sin(n.x * 5 + 1) * Math.sin(n.z * 4 + 2) * Math.sin(n.y * 3 + 0.5);
+      v.multiplyScalar(bump);
+      v.y = v.y * BALL_SQUASH + r * BALL_SQUASH * 0.92;
+      v.x += c.x;
+      v.z += c.z;
+      if (v.y < FLOOR) v.y = FLOOR;
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    const g = p.geometry;
+    g.setAttribute('position', pos);
+    g.setIndex(src.getIndex());
     g.computeVertexNormals();
     g.computeBoundingSphere();
   }
