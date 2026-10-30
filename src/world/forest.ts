@@ -72,10 +72,11 @@ const MUSHROOM_CAP_BROWN: ToonColors = { lit: '#c9965e', shade: '#ae7c47', deep:
 const MUSHROOM_STEM: ToonColors = { lit: '#f6efe0', shade: '#e6dac3', deep: '#cbbb9d', rim: '#ffffff' };
 const DOT: ToonColors = { lit: '#ffffff', shade: '#f2ede4', deep: '#ded6c8', rim: '#ffffff' };
 /** 洞穴の内側（暗い）と床 */
-const CAVE_INNER = '#2e2119';
 const CAVE_FLOOR = '#3e2d20';
 /** うろの床の絵 1 枚が覆う広さ（m） */
 const HOLLOW_FLOOR_TILE = 1.6;
+/** うろの中の壁の絵を繰り返す幅（m） */
+const HOLLOW_WALL_TILE = 1.4;
 
 /** 木（カメラとゆっくりの間に入ったら隠す）：場所・幹の太さ・高さ・葉の茂りの半径 */
 interface Tree { group: THREE.Group; x: number; z: number; trunk: number; height: number; crown: number }
@@ -585,13 +586,16 @@ export class Forest {
     const g = new THREE.Group();
     const barkMat = createAccessoryMaterial(body, BARK, { rim: 0.2, ground: -10 });
     const rimMat = createAccessoryMaterial(body, HOLLOW_RIM, { rim: 0.2, ground: -10 });
-    const innerMat = new THREE.MeshBasicMaterial({ color: CAVE_INNER, side: THREE.BackSide });
+    // 中の壁：木の内側の繊維の絵に、入口から入る明かり（頂点の色。奥・上ほど暗い）を掛ける（前は一色で、穴の開いた闇に見えた）
+    const wallTex = hollowWallTexture();
+    wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
+    const innerMat = new THREE.MeshBasicMaterial({ map: wallTex, vertexColors: true, side: THREE.BackSide });
     // 床：土に木くず・細い繊維・砂粒が混じったごわごわした絵（指示）。床の形の座標（m）を uv にしているので、HOLLOW_FLOOR_TILE m ごとに繰り返す
     const floorTex = hollowFloorTexture();
     floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
     floorTex.repeat.set(1 / HOLLOW_FLOOR_TILE, 1 / HOLLOW_FLOOR_TILE);
-    const floorMat = new THREE.MeshBasicMaterial({ map: floorTex });
-    this.disposables.push(barkMat, rimMat, innerMat, floorMat, floorTex);
+    const floorMat = new THREE.MeshBasicMaterial({ map: floorTex, vertexColors: true });
+    this.disposables.push(barkMat, rimMat, innerMat, floorMat, floorTex, wallTex);
     const W = CAVE.wall;
     // 幹（入口のアーチをくり抜く）と、中の暗い天井（半球）と床
     const trunk = hollowTrunk();
@@ -615,8 +619,9 @@ export class Forest {
     }, (t) => 0.2 + 0.03 * Math.sin(t * 17), 48, 12);
     // 入口の壁の厚み：外の幹の縁から中の天井の縁までを、アーチに沿った帯の面でつなぐ（幹と中の天井のすき間をふさぐ）。
     // 前は太い管でふさいでいて、管がアーチの両脇で幹の表面より外へはみ出していた
+    // 中の壁と同じ絵・同じ明かりで、外の縁（明るい）から中の壁の縁へつなぐ（つなぎ目を見せない）
     const reveal = archReveal(archAngle, W);
-    const revealMat = createAccessoryMaterial(body, HOLLOW_RIM, { rim: 0.2, ground: -10, doubleSide: true });
+    const revealMat = new THREE.MeshBasicMaterial({ map: wallTex, vertexColors: true, side: THREE.DoubleSide });
     this.disposables.push(reveal, revealMat);
     g.add(new THREE.Mesh(reveal, revealMat));
     this.disposables.push(arch);
@@ -715,7 +720,28 @@ function hollowFloor(wall: number): THREE.BufferGeometry {
     s.lineTo(x, -zo);
   }
   s.closePath();
-  return new THREE.ShapeGeometry(s, 1).rotateX(-Math.PI / 2);
+  const g = new THREE.ShapeGeometry(s, 1).rotateX(-Math.PI / 2);
+  // 入口から入る明かり（中の壁と同じ。床の縁は粗いので、奥へ向かって細かく分けなくても濃淡はなだらか）
+  const p = g.getAttribute('position') as THREE.BufferAttribute;
+  const col: number[] = [];
+  for (let i = 0; i < p.count; i++) {
+    const b = hollowLight(p.getX(i), 0, p.getZ(i), wall);
+    col.push(b, b, b);
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return g;
+}
+
+/**
+ * うろの中の明るさ（0〜1。中の壁・入口の厚み・床の頂点の色）：入口（+z）から入る明かりで、入口から遠い奥・上ほど暗い。
+ * 入口のそばで 0.6 ほど、奥の壁で 0.35 ほど（外より目に見えて暗くして、うろの中らしく）
+ */
+function hollowLight(x: number, y: number, z: number, wall: number): number {
+  const rz = CAVE.rz - wall;
+  const d = Math.hypot(x, (y - CAVE.doorH * 0.45) * 0.8, Math.max(0, rz - z));
+  const b = Math.min(1, 0.34 + 0.72 * Math.exp(-d / 1.3)) * (1 - 0.35 * Math.min(1, Math.max(0, y - CAVE.doorH) / (CAVE.ry - CAVE.doorH)));
+  // 頂点の色は線形の値として扱われ、画面へ出すときに明るく直される（そのまま入れると、ほとんど暗くならなかった）
+  return b ** 2.2;
 }
 
 /**
@@ -725,14 +751,19 @@ function hollowFloor(wall: number): THREE.BufferGeometry {
 function archReveal(angle: (t: number) => number, wall: number): THREE.BufferGeometry {
   const N = 64;
   const rx = CAVE.rx - wall, ry = CAVE.ry - wall, rz = CAVE.rz - wall;
-  const pos: number[] = [];
+  const pos: number[] = [], uv: number[] = [], col: number[] = [];
   for (let i = 0; i <= N; i++) {
     const a = angle(i / N);
     const x = Math.cos(a) * (CAVE.door + 0.03), y = Math.sin(a) * CAVE.doorH;
     const yi = Math.max(0, y);
     const zo = Math.sqrt(Math.max(0, hollowRadius(yi, 0) ** 2 - x * x)) - 0.01;
     const zi = rz * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2 - (yi / ry) ** 2));
-    pos.push(x, y, zo, x, y, Math.min(zi, zo - 0.02));
+    const zin = Math.min(zi, zo - 0.02);
+    pos.push(x, y, zo, x, y, zin);
+    // 絵は中の壁と同じ貼り方（hollowWallUv）。色は外の縁で明るく、中の壁の縁で中の壁と同じ明るさ
+    uv.push(...hollowWallUv(x, y, zo), ...hollowWallUv(x, y, zin));
+    const bi = hollowLight(x, yi, zin, wall);
+    col.push(1, 1, 1, bi, bi, bi);
   }
   const index: number[] = [];
   for (let i = 0; i < N; i++) {
@@ -741,9 +772,16 @@ function archReveal(angle: (t: number) => number, wall: number): THREE.BufferGeo
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setIndex(index);
   g.computeVertexNormals();
   return g;
+}
+
+/** うろの中の壁の絵の貼り方（m 単位。横は向きに沿った長さ、縦は高さ。HOLLOW_WALL_TILE m ごとに繰り返す） */
+function hollowWallUv(x: number, y: number, z: number): [number, number] {
+  return [(Math.atan2(x, z) * (CAVE.rx - CAVE.wall)) / HOLLOW_WALL_TILE, y / HOLLOW_WALL_TILE];
 }
 
 /** 大木の幹：根元から高さ HOLLOW.height までの筒（上はふさぐ）。入口（+z の側）のアーチをくり抜く */
@@ -789,34 +827,62 @@ function hollowTrunk(): THREE.BufferGeometry {
   return g;
 }
 
-/** 洞穴の殻：横 rx・高さ ry・奥行き rz の半球を少しでこぼこにして、入口（+z の側）のアーチをくり抜いた面 */
+/**
+ * うろの中の天井：横 rx・高さ ry・奥行き rz の半球を少しでこぼこにして、入口（+z の側。幅 door + 0.03・高さ doorH の半楕円）を
+ * くり抜いた面。入口にかかる頂点は入口の縁へ寄せ（三角形ごとに捨てるだけだと縁がのこぎりの歯になり、入口の厚みの帯の内側から
+ * 黒い歯が見えた）、入口のまわりはでこぼこを消して、縁を厚みの帯（archReveal）の内側の縁とぴったり合わせる。
+ * 内から見る面なので法線は使わない（頂点を共有しない＝絵の継ぎ目を三角形ごとに直せる）。uv と明かりの色を持つ
+ */
 function caveShell(rx: number, ry: number, rz: number): THREE.BufferGeometry {
-  const src = new THREE.SphereGeometry(1, 72, 36, 0, Math.PI * 2, 0, Math.PI / 2).toNonIndexed();
+  const src = new THREE.SphereGeometry(1, 160, 64, 0, Math.PI * 2, 0, Math.PI / 2).toNonIndexed();
   const p = src.getAttribute('position') as THREE.BufferAttribute;
-  const out: number[] = [];
+  const D = CAVE.door + 0.03, Hd = CAVE.doorH;
+  const pos: number[] = [], uv: number[] = [], col: number[] = [];
   const v = new THREE.Vector3();
-  const tri: THREE.Vector3[] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const tri = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const inside = [false, false, false];
   for (let i = 0; i < p.count; i += 3) {
     for (let k = 0; k < 3; k++) {
       v.fromBufferAttribute(p, i + k);
-      // でこぼこ（向きで決める。外と内の殻で同じ形になる）。地面の縁は動かさない
-      const bump = 1 + 0.05 * Math.sin(v.x * 7.1 + 1.3) * Math.sin(v.z * 6.3 + 0.7) + 0.035 * Math.sin(v.y * 9.7 + v.x * 3.1);
-      const f = v.y < 0.02 ? 1 : bump;
-      tri[k].set(v.x * rx * f, v.y * ry * f, v.z * rz * f);
+      let x = v.x * rx, y = v.y * ry, z = v.z * rz;
+      // 入口の楕円での位置（1 が縁）
+      const e = z > 0 ? Math.hypot(x / D, y / Hd) : Infinity;
+      inside[k] = e < 1;
+      if (inside[k]) {
+        // 入口の縁へ寄せる（半球の上で）
+        x /= e;
+        y /= e;
+        z = rz * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2 - (y / ry) ** 2));
+      } else if (v.y >= 0.02) {
+        // でこぼこ（向きで決める）。地面の縁と入口のまわりは動かさない
+        const fade = Math.min(1, Math.max(0, (e - 1) / 0.4));
+        const f = 1 + fade * (0.05 * Math.sin(v.x * 7.1 + 1.3) * Math.sin(v.z * 6.3 + 0.7) + 0.035 * Math.sin(v.y * 9.7 + v.x * 3.1));
+        x *= f;
+        y *= f;
+        z *= f;
+      }
+      tri[k].set(x, y, z);
     }
-    // 入口：アーチ（幅 door・高さ doorH の半楕円）の中にかかる三角形は捨てる
-    const cx = (tri[0].x + tri[1].x + tri[2].x) / 3, cy = (tri[0].y + tri[1].y + tri[2].y) / 3, cz = (tri[0].z + tri[1].z + tri[2].z) / 3;
-    if (cz > 0 && (cx / CAVE.door) ** 2 + (cy / CAVE.doorH) ** 2 < 1) continue;
-    for (const t of tri) out.push(t.x, t.y, t.z);
+    if (inside[0] && inside[1] && inside[2]) continue;
+    const us = tri.map((t) => hollowWallUv(t.x, t.y, t.z));
+    // 絵の継ぎ目（真後ろ）をまたぐ三角形は、横の座標を一周ぶん足してそろえる
+    const period = (Math.PI * 2 * (CAVE.rx - CAVE.wall)) / HOLLOW_WALL_TILE;
+    const umax = Math.max(...us.map((u) => u[0]));
+    for (const u of us) if (umax - u[0] > period / 2) u[0] += period;
+    for (let k = 0; k < 3; k++) {
+      const t = tri[k];
+      pos.push(t.x, t.y, t.z);
+      uv.push(...us[k]);
+      const b = hollowLight(t.x, t.y, t.z, CAVE.wall);
+      col.push(b, b, b);
+    }
   }
   src.dispose();
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
-  // 頂点を共有させて、なめらかな法線にする
-  const merged = mergeVertices(g);
-  g.dispose();
-  merged.computeVertexNormals();
-  return merged;
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return g;
 }
 
 /** 同じ場所の頂点を 1 つにまとめる（なめらかな法線のため） */
@@ -1118,6 +1184,69 @@ function leafLitterTexture(): THREE.CanvasTexture {
  * うろの床：暗い土の地に、濃淡のむら・細い繊維（枯れ草や木の皮のくず）・木くず・砂粒を重ねたごわごわした絵（端でつながる）。
  * 色は CAVE_FLOOR のまわりに抑える（明るくすると、暗いうろの中で床だけ浮く）
  */
+/**
+ * うろの中の壁の絵：明るめの木の内側の地に、縦に流れる木目の筋（波打つ細い線）と、ささくれ・割れ目。明かりは頂点の色で掛けるので、
+ * 地は入口の縁の明るさ（HOLLOW_RIM に近い色）で描く。上下・左右につながる
+ */
+function hollowWallTexture(): THREE.CanvasTexture {
+  const N = 512;
+  const [c, g] = canvas(N);
+  g.fillStyle = '#9c7650';
+  g.fillRect(0, 0, N, N);
+  let seed = 41;
+  const r = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const wrapX = (draw: (dx: number) => void) => {
+    for (const dx of [-N, 0, N]) draw(dx);
+  };
+  // 縦の帯のむら（幅の広い明暗）
+  for (let k = 0; k < 26; k++) {
+    const x = r() * N, w = 10 + r() * 40;
+    g.fillStyle = r() < 0.5 ? 'rgba(60,38,20,0.18)' : 'rgba(190,150,105,0.14)';
+    wrapX((dx) => g.fillRect(x + dx - w / 2, 0, w, N));
+  }
+  // 木目：上下につながる波打つ縦の線（周期 N の波なので上下の端で合う）
+  const grains = ['rgba(70,46,26,0.55)', 'rgba(52,33,18,0.45)', 'rgba(170,128,84,0.5)', 'rgba(88,60,36,0.5)'];
+  g.lineCap = 'round';
+  for (let k = 0; k < 60; k++) {
+    const x0 = r() * N, amp = 2 + r() * 7, ph = r() * Math.PI * 2, waves = 1 + Math.floor(r() * 3);
+    g.strokeStyle = grains[Math.floor(r() * grains.length)];
+    g.lineWidth = 0.7 + r() * 1.8;
+    wrapX((dx) => {
+      g.beginPath();
+      for (let y = 0; y <= N; y += 8) {
+        const x = x0 + dx + Math.sin((y / N) * Math.PI * 2 * waves + ph) * amp;
+        if (y === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+      g.stroke();
+    });
+  }
+  // ささくれ：短い縦の毛羽
+  for (let k = 0; k < 260; k++) {
+    const x = r() * N, y = r() * N, len = 4 + r() * 12, lean = (r() - 0.5) * 2;
+    g.strokeStyle = r() < 0.6 ? 'rgba(48,30,16,0.5)' : 'rgba(185,145,100,0.5)';
+    g.lineWidth = 0.6 + r() * 0.9;
+    for (const dx of [-N, 0, N]) for (const dy of [-N, 0, N]) {
+      if (y + dy + len < 0 || y + dy > N || x + dx < -4 || x + dx > N + 4) continue;
+      g.beginPath();
+      g.moveTo(x + dx, y + dy);
+      g.lineTo(x + dx + lean, y + dy + len);
+      g.stroke();
+    }
+  }
+  // 割れ目：細長い暗いすき間
+  for (let k = 0; k < 9; k++) {
+    const x = r() * N, y = r() * N, len = 40 + r() * 90, w = 1.5 + r() * 2.5, rot = (r() - 0.5) * 0.1;
+    for (const dx of [-N, 0, N]) for (const dy of [-N, 0, N]) {
+      g.fillStyle = 'rgba(30,18,10,0.7)';
+      g.beginPath();
+      g.ellipse(x + dx, y + dy, w, len / 2, rot, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  return texture(c);
+}
+
 function hollowFloorTexture(): THREE.CanvasTexture {
   const N = 512;
   const [c, g] = canvas(N);
