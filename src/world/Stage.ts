@@ -137,9 +137,15 @@ export class Stage {
     return this.forest?.mossSites ?? [];
   }
 
-  /** 中心（x, z）・半径 r の円が、草むら・茂み（当たらないが、中の物が隠れる）にかかるか（森のとき） */
+  /** 中心（x, z）・半径 r の円が、草むら・茂み（当たらないが、中の物が隠れる）や地面を這う根にかかるか（森のとき） */
   inCover(x: number, z: number, r: number): boolean {
-    return !!this.forest?.covers.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + r);
+    // 地面を這う根の上も（巣材が根を突き抜けて見えないよう）
+    return !!this.forest && (this.forest.covers.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + r) || this.forest.onRoot(x, z, r));
+  }
+
+  /** 中心（x, z）・半径 r の円が、地面を這う根にかかるか（森のとき） */
+  onRoot(x: number, z: number, r: number): boolean {
+    return this.forest?.onRoot(x, z, r) ?? false;
   }
 
   /** 中心（x, z）・半径 r の円が、当たる物（壁・うろの幹・木・岩・皿など。colliders の箱）にかかるか */

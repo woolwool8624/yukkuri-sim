@@ -38,6 +38,15 @@ const ARCH_SINK = 0.2;
 const CAVE_INSIDE = 0.62;
 /** うろの床の上とみなす所（巣材を暗がりに沈める）：内側の円のこの比より内 */
 const HOLLOW_FLOOR = 0.92;
+/** といれの木の根：向き（rad。木から見て +z が 0）と長さ（m）。くぼみの左右と横へ */
+const TOILET_ROOTS: [number, number][] = [[-1, 1.3], [1, 1.2], [-1.7, 1.0], [1.75, 1.05]].map(([side, len]) => [Math.atan2(Math.sin(side * 0.9), Math.abs(Math.cos(side * 0.9))), len]);
+/** 根を張る木の裾の広がり（幹の半径に対する比。根のない所。trunkProfile の 1.7 より控えめ） */
+const BUTTRESS_SKIRT = 1.3;
+/** 根元のふくらみ（buttress）：大きさ（半径に対する比）・向きのまわりの幅（rad）・消える高さ（m） */
+const TOILET_BUTTRESS = { amp: 0.5, w: 0.26, h: 0.4 };
+const HOLLOW_BUTTRESS = { amp: 0.14, w: 0.12, h: 0.6 };
+/** うろの根の向き（洞穴のローカル。入口 +z の側 ±0.35π は空ける） */
+const HOLLOW_ROOTS = Array.from({ length: 7 }, (_, i) => Math.PI * 0.35 + (i / 7) * Math.PI * 1.3 + Math.sin(i * 2.3) * 0.12);
 /** 苔の生える所を、物の体が乗れない所（props の円）からこれだけ外に置く（m。根元に寄り添うよう、苔の半径より少し内） */
 const MOSS_OFF = 0.22;
 /** 草むら・茂み・キノコを置かない所：洞穴の外の楕円のこの倍より内 */
@@ -83,6 +92,8 @@ export class Forest {
   readonly toilet = { x: TOILET.x, z: TOILET.z, w: TOILET.w, d: TOILET.d };
   /** 置いてある物（体が乗れない所）：木・切り株・岩・倒木の中心と半径。行き先もこの外へ寄せる */
   readonly props: { x: number; z: number; r: number }[] = [];
+  /** 地面を這う根の通り道（上から見た線分と半幅。草・キノコ・茂み・巣材を根に重ねない） */
+  private readonly rootSegs: { ax: number; az: number; bx: number; bz: number; w: number }[];
   /** 草むら・茂み（当たらないが、中に置いた物が隠れる）：中心と半径（m） */
   readonly covers: { x: number; z: number; r: number }[] = [];
   /**
@@ -100,6 +111,7 @@ export class Forest {
   constructor(body: THREE.ShaderMaterial, outlineBody: THREE.ShaderMaterial) {
     // 洞穴の向き（入口は広場の真ん中を向く）。置く物を洞穴に重ねないのに先に使う
     this.caveYaw = Math.atan2(-CAVE.x, -CAVE.z);
+    this.rootSegs = rootSegments(this.caveYaw);
     const outline = createAccessoryOutlineMaterial(outlineBody);
     const caveOutline = createAccessoryOutlineMaterial(outlineBody);
     this.disposables.push(outline, caveOutline);
@@ -136,9 +148,10 @@ export class Forest {
     ]) this.colliders.push({ x, z, yaw: 0, hx, hz, h: WALL_H, contacts: 0 });
 
     // 木：周りをぐるりと囲む（範囲の縁の外。奥ほど密に）と、もっと外の列（霧に溶ける）
-    const tree = (x: number, z: number, trunk: number, height: number, solid: boolean) => {
+    const tree = (x: number, z: number, trunk: number, height: number, solid: boolean, roots?: readonly number[]) => {
       const g = new THREE.Group();
-      g.add(add(lathe(trunkProfile(trunk, height), 20), mat(BARK)));
+      // 根を張る木は、根の向きだけ幹の根元をふくらませる（幹から根が生えて見えるように）
+      g.add(add(roots ? buttressTrunk(trunk, height, roots) : lathe(trunkProfile(trunk, height), 20), mat(BARK)));
       // 葉の茂り：幹の上に丸い塊を 4〜6 つ（色ごとに 1 つの形にまとめる。木が多いので、描く回数を減らす）
       const crown = trunk * 3.4 + 0.6;
       const n = 4 + Math.floor(this.rand() * 3);
@@ -189,7 +202,7 @@ export class Forest {
     ring(6.5, 2.4, 3.6, false);
     // 広場の中の木（1 本）と、といれの木
     tree(-3.4, 1.9, 0.34, 4.2, true);
-    tree(TOILET_TREE.x, TOILET_TREE.z, TOILET_TREE.r, 4.8, true);
+    tree(TOILET_TREE.x, TOILET_TREE.z, TOILET_TREE.r, 4.8, true, TOILET_ROOTS.map((r) => r[0]));
 
     // といれ：木の根元のくぼみ（土の色の浅い穴。縁が少し盛り上がる）と、くぼみの両脇へ伸びる根
     const soilTex = soilTexture();
@@ -205,13 +218,9 @@ export class Forest {
     const rim = add(moundRing(TOILET.w / 2, TOILET.d / 2, 0.14, 0.035), mat(SOIL));
     rim.position.set(TOILET.x, 0, TOILET.z);
     this.object.add(rim);
-    // 根：幹の根元から、くぼみの左右と横へ這って地面へ潜る。side は開く向き（-1 左〜1 右。±1.7 でほぼ真横）
-    for (const [side, len] of [[-1, 1.3], [1, 1.2], [-1.7, 1.0], [1.75, 1.05]] as const) {
-      const ex = Math.sin(side * 0.9) * len, ez = Math.abs(Math.cos(side * 0.9)) * len;
-      const sx = Math.sin(side * 0.9) * TOILET_TREE.r * 0.85, sz = Math.abs(Math.cos(side * 0.9)) * TOILET_TREE.r * 0.85;
-      const geo = tubeAlong((t) => new THREE.Vector3(
-        sx + ex * t, 0.3 * (1 - t) ** 1.6 - t * 0.03, sz + ez * t,
-      ), (t) => 0.12 * (1 - t * 0.7), 16, 10);
+    // 根：幹の根元のふくらみ（buttressTrunk）の足元から、くぼみの左右と横へ平たく地面を這い、細くなって潜る（flatRoot）
+    for (const [a, len] of TOILET_ROOTS) {
+      const geo = flatRoot(a, TOILET_TREE.r * 0.75, toiletRootEnd(len), 0.17, 0.11, a * 7);
       const root = add(geo, mat(BARK));
       root.position.set(TOILET_TREE.x, 0, TOILET_TREE.z);
       this.object.add(root);
@@ -309,8 +318,9 @@ export class Forest {
     }
 
     // 茂み（当たらない。中に入れる）
-    for (const [x, z, s] of [[-7.2, 4.6, 0.55], [7.3, -1.2, 0.6], [1.8, 5.4, 0.5], [-2.2, -5.4, 0.55], [7.2, 5.3, 0.45], [-7.4, -3.2, 0.5]]) {
-      if (this.nearCave(x, z)) continue;
+    for (const [x0, z0, s] of [[-7.2, 4.6, 0.55], [7.3, -1.2, 0.6], [1.8, 5.4, 0.5], [-2.2, -5.4, 0.55], [7.2, 5.3, 0.45], [-7.4, -3.2, 0.5]]) {
+      if (this.nearCave(x0, z0)) continue;
+      const [x, z] = this.offRoots(x0, z0, s * 1.3);
       const g = new THREE.Group();
       const n = 4 + Math.floor(this.rand() * 2);
       for (let i = 0; i < n; i++) {
@@ -327,11 +337,12 @@ export class Forest {
 
     // 草むら（当たらない）：細い葉の束
     const grassMat = mat(GRASS, true);
-    for (const [x, z, s] of [
+    for (const [x0, z0, s] of [
       [-1.8, 3.6, 1], [2.6, 3.9, 0.8], [5.4, -0.4, 0.9], [-6.6, 1.0, 1.1], [-0.4, -2.6, 0.7], [1.9, -1.2, 0.8],
       [-4.0, 4.9, 1], [6.0, 4.6, 0.9], [-7.3, -5.0, 1.1], [0.3, 5.3, 0.9], [-3.6, -1.0, 0.6], [-5.6, -1.0, 1],
     ]) {
-      if (this.nearCave(x, z)) continue;
+      if (this.nearCave(x0, z0)) continue;
+      const [x, z] = this.offRoots(x0, z0, 0.4 * s);
       const geo = grassClump(0.32 * s, 0.45 * s, 26, this.seed++);
       this.disposables.push(geo);
       const m = new THREE.Mesh(geo, grassMat);
@@ -341,11 +352,12 @@ export class Forest {
     }
 
     // キノコ：といれの木の根元・倒木・切り株の脇
-    for (const [x, z, s, red] of [
+    for (const [x0, z0, s, red] of [
       [-6.3, -4.0, 1, 1], [-6.6, -3.7, 0.7, 1], [-4.2, -4.1, 0.8, 0], [-4.5, 3.3, 0.9, 0], [-4.2, 3.5, 0.6, 0],
       [4.2, 2.1, 0.75, 1], [-0.9, -3.8, 0.65, 0], [6.9, 1.5, 0.7, 1],
     ]) {
-      if (this.nearCave(x, z)) continue;
+      if (this.nearCave(x0, z0)) continue;
+      const [x, z] = this.offRoots(x0, z0, 0.13 * s);
       const g = new THREE.Group();
       const h = 0.16 * s, cr = 0.11 * s;
       g.add(add(lathe([[0, 0], [0.035 * s, 0], [0.03 * s, h * 0.6], [0.026 * s, h], [0, h]], 12, true), mat(MUSHROOM_STEM)));
@@ -518,6 +530,28 @@ export class Forest {
     return true;
   }
 
+  /** 中心（x, z）・半径 r の円が、地面を這う根にかかるか */
+  onRoot(x: number, z: number, r: number): boolean {
+    return this.rootSegs.some((g) => {
+      const vx = g.bx - g.ax, vz = g.bz - g.az;
+      const k = Math.min(1, Math.max(0, ((x - g.ax) * vx + (z - g.az) * vz) / (vx * vx + vz * vz)));
+      return Math.hypot(x - (g.ax + vx * k), z - (g.az + vz * k)) < g.w + r;
+    });
+  }
+
+  /** 飾り（草・キノコ・茂み）の置き場が根にかかるなら、近くの根にかからない所へずらす（根を突き抜けて見えた） */
+  private offRoots(x: number, z: number, r: number): [number, number] {
+    if (!this.onRoot(x, z, r)) return [x, z];
+    for (let d = 0.1; d <= 1.5; d += 0.1) {
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const px = x + Math.sin(a) * d, pz = z + Math.cos(a) * d;
+        if (!this.onRoot(px, pz, r)) return [px, pz];
+      }
+    }
+    return [x, z];
+  }
+
   /** ワールドの点を洞穴のローカル（入口が +z）へ */
   private toCave(x: number, z: number): [number, number] {
     const dx = x - CAVE.x, dz = z - CAVE.z;
@@ -569,17 +603,12 @@ export class Forest {
     g.add(new THREE.Mesh(reveal, revealMat));
     this.disposables.push(arch);
     g.add(withOutline(arch, rimMat, outline));
-    // 根：入口を避けて、幹の根元から放射状に地面へ這う
-    for (let i = 0; i < 7; i++) {
-      const a = Math.PI * 0.35 + (i / 7) * Math.PI * 1.3 + Math.sin(i * 2.3) * 0.12; // 入口（+z）の側 ±0.35π は空ける
-      const dir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
-      const len = 1.2 + 0.5 * Math.abs(Math.sin(i * 1.7));
-      const r0 = hollowRadius(0.4, a);
-      const geo = tubeAlong((t) => new THREE.Vector3(dir.x * (r0 - 0.15 + len * t), 0.55 * (1 - t) ** 1.7 - 0.04 * t, dir.z * (r0 - 0.15 + len * t)),
-        (t) => 0.26 * (1 - t * 0.75), 16, 10);
+    // 根：入口を避けて、幹の根元のふくらみ（hollowRadius の HOLLOW_ROOTS）の足元から、放射状に平たく地面を這う
+    HOLLOW_ROOTS.forEach((a, i) => {
+      const geo = flatRoot(a, hollowRootStart(a), hollowRootEnd(a, i), 0.36, 0.2, i * 3.1);
       this.disposables.push(geo);
       g.add(withOutline(geo, barkMat, outline));
-    }
+    });
     g.position.set(CAVE.x, 0, CAVE.z);
     g.rotation.y = this.caveYaw;
     this.object.add(g);
@@ -639,7 +668,7 @@ function hollowRadius(y: number, a: number): number {
   const taper = base * (1 - (1 - HOLLOW.topRatio) * Math.min(1, y / HOLLOW.height));
   const flare = 1 + HOLLOW.flare * Math.exp(-y / 0.45);
   const ridge = 1 + HOLLOW.ridgeDepth * Math.sin(a * HOLLOW.ridges + y * 0.35);
-  return taper * flare * ridge;
+  return taper * flare * ridge * (1 + buttress(a, y, HOLLOW_ROOTS, HOLLOW_BUTTRESS));
 }
 
 /**
@@ -807,6 +836,129 @@ function lumpy(geo: THREE.BufferGeometry, amount: number, phase: number): THREE.
     v.addScaledVector(n, d * amount);
     p.setXYZ(i, v.x, v.y, v.z);
   }
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * 根の向き（roots。+z が 0 の角度）の所だけ幹の根元を外へふくらませる量（半径に対する比）：向きのまわり幅 w（rad）の山を、
+ * 高さ h（m）で消える形で足す。幹から根へ一つながりにする（丸い管を幹に立てかけると、棒を貼り付けたように見えた）
+ */
+function buttress(a: number, y: number, roots: readonly number[], b: { amp: number; w: number; h: number }): number {
+  let k = 0;
+  for (const r of roots) {
+    const d = Math.atan2(Math.sin(a - r), Math.cos(a - r));
+    k += Math.exp(-((d / b.w) ** 2));
+  }
+  return b.amp * Math.min(1, k) * Math.exp(-y / b.h);
+}
+
+/** 根を張る木の幹（半径 r・高さ h）：trunkProfile より裾の広がりを控えめにし、根の向きだけ根元をふくらませる（buttress） */
+function buttressTrunk(r: number, h: number, roots: readonly number[]): THREE.BufferGeometry {
+  // 高さ → 半径（下から）。裾は全周ではなく、根のふくらみで広げる
+  const prof: [number, number][] = [[r * BUTTRESS_SKIRT, 0], [r * 1.12, 0.14], [r * 1.03, 0.45], [r, 1], [r * 0.85, h * 0.7], [r * 0.7, h + 0.3]];
+  const radius = (y: number) => {
+    for (let i = 1; i < prof.length; i++) {
+      const [r0, y0] = prof[i - 1], [r1, y1] = prof[i];
+      if (y <= y1) return r0 + ((r1 - r0) * (y - y0)) / (y1 - y0);
+    }
+    return prof[prof.length - 1][0];
+  };
+  const NA = 96, NY = 48, top = h + 0.3;
+  const pos: number[] = [];
+  for (let j = 0; j <= NY; j++) {
+    const y = top * (j / NY) ** 2;
+    for (let i = 0; i <= NA; i++) {
+      const a = (i / NA) * Math.PI * 2;
+      const rr = radius(y) * (1 + buttress(a, y, roots, TOILET_BUTTRESS));
+      pos.push(Math.sin(a) * rr, y, Math.cos(a) * rr);
+    }
+  }
+  const tip = pos.length / 3;
+  pos.push(0, top + 0.05, 0);
+  const index: number[] = [];
+  for (let j = 0; j < NY; j++) {
+    for (let i = 0; i < NA; i++) {
+      const a = j * (NA + 1) + i, b = a + NA + 1;
+      index.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  const last = NY * (NA + 1);
+  for (let i = 0; i < NA; i++) index.push(last + i + 1, tip, last + i);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(index);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * 根の付け根（中心からの距離）：幹の中に深く埋める（ふくらみの足元から始めると、少し上で幹が細くなる所で付け根の切り口が幹の外に出て、
+ * 黒い穴＝すき間に見えた）。うろは壁の厚みの中（中の部屋へ突き抜けない）
+ */
+function hollowRootStart(a: number): number {
+  return hollowRadius(0.6, a) - 0.3;
+}
+function hollowRootEnd(a: number, i: number): number {
+  return hollowRadius(0, a) + (1.2 + 0.5 * Math.abs(Math.sin(i * 1.7))) * 0.8;
+}
+function toiletRootEnd(len: number): number {
+  return TOILET_TREE.r * BUTTRESS_SKIRT * (1 + TOILET_BUTTRESS.amp) + len * 0.8;
+}
+
+/** 地面を這う根の通り道（ワールド。上から見た線分と半幅。横への曲がりの分を足す）。caveYaw はうろの向き */
+function rootSegments(caveYaw: number): { ax: number; az: number; bx: number; bz: number; w: number }[] {
+  const out: { ax: number; az: number; bx: number; bz: number; w: number }[] = [];
+  for (const [a, len] of TOILET_ROOTS) {
+    const s = Math.sin(a), c = Math.cos(a), d0 = TOILET_TREE.r, d1 = toiletRootEnd(len);
+    out.push({ ax: TOILET_TREE.x + s * d0, az: TOILET_TREE.z + c * d0, bx: TOILET_TREE.x + s * d1, bz: TOILET_TREE.z + c * d1, w: 0.17 + 0.14 });
+  }
+  const cy = Math.cos(caveYaw), sy = Math.sin(caveYaw);
+  const world = (lx: number, lz: number): [number, number] => [CAVE.x + lx * cy + lz * sy, CAVE.z - lx * sy + lz * cy];
+  HOLLOW_ROOTS.forEach((a, i) => {
+    const d0 = hollowRadius(0, a) * 0.9, d1 = hollowRootEnd(a, i);
+    const [ax, az] = world(Math.sin(a) * d0, Math.cos(a) * d0), [bx, bz] = world(Math.sin(a) * d1, Math.cos(a) * d1);
+    out.push({ ax, az, bx, bz, w: 0.36 + 0.14 });
+  });
+  return out;
+}
+
+/**
+ * 地面を這う平たい根：向き a（+z が 0）へ、中心から d0（幹の根元のふくらみの中）から d1 まで。断面は横に広く上下に薄い楕円
+ * （横の半幅 w・上下の半高さ h）を、少し地面に埋め、先へ細くとがらせて地面へ潜らせる。横へゆるく曲がる（seed で変える）。
+ * 丸い管だと棒に見え、先の太い切り口も見えた
+ */
+function flatRoot(a: number, d0: number, d1: number, w: number, h: number, seed: number): THREE.BufferGeometry {
+  const NS = 40, NR = 20;
+  const dir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+  const side = new THREE.Vector3(dir.z, 0, -dir.x);
+  const pos: number[] = [];
+  for (let i = 0; i <= NS; i++) {
+    const t = i / NS;
+    const d = d0 + (d1 - d0) * t;
+    const k = (1 - t) ** 0.75; // 先へ細る
+    const ww = Math.max(0.004, w * (0.35 + 0.65 * k) * k ** 0.3);
+    const hh = Math.max(0.003, h * k);
+    // 横へのゆるい曲がりと、上下のうねり。先は地面へ潜る
+    const sway = Math.sin(t * 3.1 + seed) * 0.12 * t;
+    const cy = hh * 0.25 - (t > 0.7 ? ((t - 0.7) / 0.3) * h * 0.35 : 0) + 0.02 * Math.sin(t * 9 + seed) * k;
+    const c = dir.clone().multiplyScalar(d).addScaledVector(side, sway);
+    for (let j = 0; j <= NR; j++) {
+      const th = (j / NR) * Math.PI * 2;
+      pos.push(c.x + side.x * Math.cos(th) * ww, cy + Math.sin(th) * hh, c.z + side.z * Math.cos(th) * ww);
+    }
+  }
+  const index: number[] = [];
+  for (let i = 0; i < NS; i++) {
+    for (let j = 0; j < NR; j++) {
+      const p = i * (NR + 1) + j, q = p + NR + 1;
+      // 外向きの面（逆に巻くと内向きになり、根が真っ黒に見えた）
+      index.push(p, p + 1, q, p + 1, q + 1, q);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(index);
   g.computeVertexNormals();
   return g;
 }

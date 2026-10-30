@@ -428,14 +428,15 @@ export class NestBuild {
   }
 
   /**
-   * 置く所にしてよいか：中心（x, z）・半径 r の円が壁（うろの幹・木・岩など）にかからず、おうちと同じ側（うろの中か外か）にある
+   * 置く所にしてよいか：中心（x, z）・半径 r の円が壁（うろの幹・木・岩など）・地面を這う根にかからず、おうちと同じ側（うろの中か外か）にある
    * （寝床の輪や固まりが、うろの壁の向こう側に出た）
    */
   private reachable(x: number, z: number, r: number): boolean {
     const st = this.y.stage;
     const home = this.y.home.current;
     if (!st) return true;
-    if (st.blocked(x, z, r + 0.03)) return false;
+    // 地面を這う根の上にも置かない（根を突き抜けて見える）
+    if (st.blocked(x, z, r + 0.03) || st.onRoot(x, z, r)) return false;
     return !home || st.inHollow(x, z) === st.inHollow(home.x, home.z);
   }
 
