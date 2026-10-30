@@ -23,6 +23,7 @@ import { Puku } from './puku';
 import { Branch } from './branch';
 import { Forage } from './forage';
 import { NestStuff } from './nestStuff';
+import { NestBuild } from './nestBuild';
 import { PushBox } from './box';
 import { Greet } from './greet';
 import { Death } from './death';
@@ -123,6 +124,8 @@ export class Yukkuri {
   readonly forage: Forage;
   /** 巣材（たからもの・べっど。nestStuff.object をシーンに置いて表示する） */
   readonly nestStuff: NestStuff;
+  /** 巣作り（おうちに巣材を運んで寝床と固まりを作る） */
+  readonly nestBuild: NestBuild;
   /** 段ボール箱（障害物。体ごと押して運ぶ。box.object をシーンに置いて表示する） */
   readonly box: PushBox;
   /** あいさつ（動作の前の宣言と、挨拶） */
@@ -225,6 +228,7 @@ export class Yukkuri {
     this.branch = new Branch(this);
     this.forage = new Forage(this);
     this.nestStuff = new NestStuff(this);
+    this.nestBuild = new NestBuild(this);
     this.box = new PushBox(this);
     this.greet = new Greet(this);
     this.death = new Death(this);
@@ -336,7 +340,8 @@ export class Yukkuri {
       const p = { x: c.x, z: c.z };
       if (stage.limit(p, this.stageMargin)) this.drop(0.3, p.x, p.z);
       if (this.box.shown && !this.box.fits()) this.box.clear();
-      // 巣材は片付けて、飼育ケースなら少し散らばらせる
+      // 巣作りはやめ、巣材は片付けて、飼育ケースなら少し散らばらせる
+      this.nestBuild.cancel();
       this.nestStuff.mapChanged(stage.map);
     };
     this.locomotion.limit = (t) => stage.limit(t, this.stageMargin);
@@ -511,6 +516,7 @@ export class Yukkuri {
     this.dishEat.update(dt);
     this.toilet.update(dt); // といれへの行き先・身ぶりも移動の処理より先に指示する
     this.cleanup.update(dt);
+    this.nestBuild.update(dt); // 行き先を移動の処理より先に指示する
     this.grill.update(dt); // 焼いている間の身ぶりも移動の処理より先に指示する
     this.greet.update(dt); // 宣言を言い終えたら動作を始める（動作の処理は次のステップから）
     this.otabe.update(dt); // 帽子を脱いでから割れる（割れるまでは移動を止めておく）
@@ -565,6 +571,7 @@ export class Yukkuri {
     this.branch.sync(); // 三つ編みの毛先が決まった後で
     this.box.sync(); // 帽子を箱からよけて傾ける（つばの上の餌より先に）
     this.forage.sync(); // 帽子と三つ編みの毛先が決まった後で
+    this.nestBuild.sync(); // 三つ編みの毛先が決まった後で
     this.peni.update(still);
     this.dropping.sync();
     this.vomit.sync();

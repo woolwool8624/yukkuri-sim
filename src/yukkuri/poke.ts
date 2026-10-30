@@ -199,7 +199,10 @@ export class Poke {
     if (dead) return;
     this.hits += slap ? SLAP_HITS : 1;
     y.stress.add(slap ? y.stress.params.slap : y.stress.params.poke);
-    if (slap) y.forage.spill(); // 叩かれると帽子のつばの餌は落ちる
+    if (slap) {
+      y.forage.spill(); // 叩かれると帽子のつばの餌は落ちる
+      y.nestBuild.cancel(); // 巣作りはやめる（運んでいる物はその場に落とす）
+    }
     // 押された量をためて、届いたら倒れる（立っているとき）・転がる（寝転んでいるとき）
     this.knockOver(slap, strength);
     if (slap) this.slapSound(point, this.velocity.clone().normalize());

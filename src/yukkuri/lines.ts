@@ -21,8 +21,9 @@ export type LineKey =
   | 'boxGo' | 'boxPush' | 'boxDone' | 'boxStuck' | 'boxBump'
   | 'dishNone' | 'dishEmpty' | 'waterNone'
   | 'cleanNoToilet' | 'cleanNone' | 'cleanPick' | 'cleanDone'
+  | 'nestNoHome' | 'nestNone' | 'nestBed' | 'nestTreasure' | 'nestFood' | 'nestDone'
   | 'grillStart' | 'grillScream' | 'grillNoHop' | 'grillNoMove' | 'grillAfter' | 'grillStuck' | 'grillEscape'
-  | 'declarePoo' | 'declareExercise' | 'declareMeal' | 'declareSleep' | 'declareDrink' | 'declareClean'
+  | 'declarePoo' | 'declareExercise' | 'declareMeal' | 'declareSleep' | 'declareDrink' | 'declareClean' | 'declareNest'
   | 'greetYukkuri' | 'greetEatMe' | 'greetLast' | 'greetPlace'
   | 'dyingGasp';
 
@@ -89,6 +90,12 @@ const COMMON: Lines = {
   cleanNone: ['おといれのそとにはなにもないよ！'],
   cleanPick: ['ゆぅ…くさいよ…', 'ゆげぇ…', 'ゆっくりできないよ…', 'がまんするよ…'],
   cleanDone: ['ゆぅ…きれいになったよ…', 'ゆっくりおそうじできたよ…'],
+  nestNoHome: ['ゆっくりぷれいすがまだきまってないよ？', 'どこをおうちにするかきめてね！'],
+  nestNone: ['もうはこぶものがないよ！', 'おうちはもうできてるよ！'],
+  nestBed: ['ふかふかさんだよ！', 'べっどさんにするよ！', 'ゆっくりはこぶよ！', 'うんしょ…うんしょ…'],
+  nestTreasure: ['たからものさんだよ！', 'きらきらさんだよ！', 'ゆっくりしまっておくよ！'],
+  nestFood: ['ごはんさんもはこぶよ！', 'たくわえるよ！', 'ゆっくりためておくよ！'],
+  nestDone: ['ゆっくりできるおうちができたよ！', 'ゆっへん！すてきなおうちだよ！', 'ここでゆっくりするよ！'],
   grillStart: ['ゆ゛っ！？あぢゅい！あぢゅいよおおお！', 'ゆぎゃああああ！？'],
   grillScream: ['あぢゅい！あぢゅいいい！', 'ゆぎゃああああ！', 'やめてね！やめてねえええ！', 'あんよさんがあああ！', 'ゆっぐりでぎないいい！', 'だずげでえええ！'],
   grillNoHop: ['あんよさんが…ぴょんぴょんできないよおお！', 'ゆぐっ…あんよがいうこときかないよ…！'],
@@ -103,6 +110,7 @@ const COMMON: Lines = {
   declareSleep: ['すーやすーやするよ！'],
   declareDrink: ['ごーくごーくするよ！'],
   declareClean: ['ゆぅ…おといれにはこぶよ…'],
+  declareNest: ['おうちづくりをはじめるよ！'],
   greetYukkuri: ['ゆっくりしていってね！'],
   greetEatMe: ['おたべなさい！'],
   greetLast: ['もっとゆっくりしたかったよ…'],
@@ -169,6 +177,12 @@ const MARISA_NOZE: Partial<Lines> = {
   cleanNone: ['おといれのそとにはなにもないのぜ！'],
   cleanPick: ['ゆぅ…くさいのぜ…', 'ゆげぇ…', 'ゆっくりできないのぜ…', 'がまんするのぜ…'],
   cleanDone: ['ゆぅ…きれいになったのぜ…', 'ゆっくりおそうじできたのぜ…'],
+  nestNoHome: ['ゆっくりぷれいすがまだきまってないのぜ？', 'どこをおうちにするかきめるのぜ！'],
+  nestNone: ['もうはこぶものがないのぜ！', 'おうちはもうできてるのぜ！'],
+  nestBed: ['ふかふかさんなのぜ！', 'べっどさんにするのぜ！', 'まりさがはこぶのぜ！', 'うんしょ…うんしょ…'],
+  nestTreasure: ['たからものさんなのぜ！', 'きらきらさんなのぜ！', 'まりさのたからものなのぜ！'],
+  nestFood: ['ごはんさんもはこぶのぜ！', 'たくわえるのぜ！', 'ふゆごもりのじゅんびなのぜ！'],
+  nestDone: ['ゆっくりできるおうちができたのぜ！', 'ゆっへん！まりさのおうちはさいこうなのぜ！', 'ここでゆっくりするのぜ！'],
   grillStart: ['ゆ゛っ！？あぢゅいのぜ！あぢゅいのぜええ！', 'ゆぎゃああああ！？'],
   grillScream: ['あぢゅい！あぢゅいのぜええ！', 'ゆぎゃああああ！', 'やめるのぜ！やめるのぜええ！', 'あんよさんがあああ！', 'ゆっぐりでぎないのぜえ！', 'だずげでほしいのぜええ！'],
   grillNoHop: ['あんよさんが…ぴょんぴょんできないのぜ！', 'ゆぐっ…あんよがいうこときかないのぜ…！'],
@@ -183,6 +197,7 @@ const MARISA_NOZE: Partial<Lines> = {
   declareSleep: ['すーやすーやするのぜ！'],
   declareDrink: ['ごーくごーくするのぜ！'],
   declareClean: ['ゆぅ…おといれにはこぶのぜ…'],
+  declareNest: ['おうちづくりをはじめるのぜ！'],
   greetLast: ['もっとゆっくりしたかったのぜ…'],
   greetPlace: ['ここを{species}のゆっくりぷれいすにするのぜ！'],
 };

@@ -24,7 +24,8 @@ import type { Yukkuri } from './Yukkuri';
  *            押すたびに 1 個、一番近い地面の餌を拾い、持ったまま帽子のそばへ戻って放り込む。地面の餌がなくなったら
  *            （または中がいっぱいになったら）かぶり直す
  */
-type ItemState = 'ground' | 'picking' | 'lift' | 'carry' | 'toss' | 'hat' | 'falling' | 'tossIn' | 'inHat';
+/** held：巣作り（nestBuild.ts）が三つ編みで運んでいる（位置は運ぶ側が決める） */
+type ItemState = 'ground' | 'picking' | 'lift' | 'carry' | 'toss' | 'hat' | 'falling' | 'tossIn' | 'inHat' | 'held';
 export type PickMode = 'brim' | 'hat';
 
 interface Item {
@@ -43,6 +44,21 @@ interface Item {
   stash: boolean;
   /** 置いてある所の高さ（m。地面は 0、餌皿の中は皿の底） */
   base: number;
+  /** 巣作りでおうちの横に並べた餌（拾う・帽子に入れる対象から外す） */
+  nest: boolean;
+}
+
+/** 巣作りが運ぶ地面の餌の持ち手 */
+export interface FoodRef {
+  readonly object: THREE.Group;
+  /** 地面で占める広さ（上から見た半径。m） */
+  readonly r: number;
+  /** 片付けられた・ほかで拾われた（もう運べない） */
+  gone(): boolean;
+  /** 持ち上げる（これから運ぶ。位置は運ぶ側が決める） */
+  hold(): void;
+  /** （x, z）の地面に置く。nest なら巣に並べた餌として */
+  put(x: number, z: number, nest: boolean): void;
 }
 
 /** 餌の大きさ（胴の半径に対する比。形は単位の大きさで作る） */
@@ -165,7 +181,7 @@ export class Forage {
 
   /** 地面にある数 */
   get onGround(): number {
-    return this.items.filter((i) => i.state === 'ground').length;
+    return this.items.filter((i) => i.state === 'ground' && !i.nest).length;
   }
 
   /** 拾っている途中か（三つ編みと身ぶりを使っている） */
@@ -210,7 +226,7 @@ export class Forage {
     this.object.add(object);
     const item: Item = {
       kind, object, state: 'ground', slot: -1, yaw: Math.random() * Math.PI * 2, t: 0,
-      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0,
+      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0, nest: false,
     };
     this.items.push(item);
     this.placeOnGround(item, p.x, p.z, base);
@@ -218,6 +234,7 @@ export class Forage {
 
   /** 一番近い地面の餌を拾いに行く（拾い方が「帽子に直接入れる」なら pickIntoHat） */
   pickNearest(): boolean {
+    if (this.y.nestBuild.active) return false;
     if (this.mode === 'hat') return this.pickIntoHat();
     const y = this.y;
     if (this.picker.active || this.stash.active) return false;
@@ -233,7 +250,7 @@ export class Forage {
     let best: Item | null = null;
     let bd = Infinity;
     for (const it of this.items) {
-      if (it.state !== 'ground') continue;
+      if (it.state !== 'ground' || it.nest) continue;
       const d = it.object.position.distanceTo(y.center);
       if (d < bd) {
         bd = d;
@@ -326,6 +343,28 @@ export class Forage {
       // 拾われた・片付けられた（地面にない）
       gone: () => !this.items.includes(it) || it.state !== 'ground',
     };
+  }
+
+  /** 巣作りが運ぶ地面の餌（inNest：巣に並べ終えたものか、まだのものか） */
+  nestFoods(inNest: boolean): FoodRef[] {
+    return this.items.filter((it) => it.state === 'ground' && it.nest === inNest).map((it) => ({
+      object: it.object,
+      r: this.y.shape.radius * SIZE * 0.6,
+      gone: () => !this.items.includes(it),
+      hold: () => {
+        it.state = 'held';
+        it.base = 0;
+      },
+      put: (x: number, z: number, nest: boolean) => {
+        it.nest = nest;
+        this.placeOnGround(it, x, z);
+      },
+    }));
+  }
+
+  /** 巣に並べた印を全部外す（おうちを移したとき：次の巣作りで新しいおうちへ運び直す） */
+  forgetNest(): void {
+    for (const it of this.items) it.nest = false;
   }
 
   /** 片付ける（拾う途中ならやめる） */
@@ -422,6 +461,7 @@ export class Forage {
    * 置いてあるときに呼ぶと、かぶり直す
    */
   toggleHatOff(): boolean {
+    if (this.y.nestBuild.active) return false;
     if (this.hatOffOnly && this.stash.down) {
       this.stash.putBack();
       return true;
@@ -456,7 +496,7 @@ export class Forage {
       return false;
     }
     if (!y.outfit.hat) return false;
-    const waiting = this.items.filter((i) => i.state === 'ground' && !i.stash).length;
+    const waiting = this.items.filter((i) => i.state === 'ground' && !i.stash && !i.nest).length;
     if (waiting <= this.pending) return false;
     if (this.inHat + this.onHat + this.pending >= STASH_MAX) {
       this.say(y.line('stashFull'), 0.2, 1.6);
@@ -500,7 +540,7 @@ export class Forage {
       this.fillNext(false);
       return;
     }
-    const ground = this.items.filter((i) => i.state === 'ground');
+    const ground = this.items.filter((i) => i.state === 'ground' && !i.nest);
     if (ground.length === 0 || this.inHat >= STASH_MAX) {
       if (ground.length > 0) this.say(y.line('stashFull'), 0.2, 1.6);
       this.pending = 0;
@@ -565,7 +605,7 @@ export class Forage {
   /** 帽子にしまう：帽子を脱いで地面に逆さに置き、つばの餌を中へ入れて、かぶり直す */
   stashHat(): boolean {
     const y = this.y;
-    if (this.picker.active || this.stash.active || !y.outfit.hat) return false;
+    if (this.picker.active || this.stash.active || !y.outfit.hat || y.nestBuild.active) return false;
     if (y.branch.holding || y.branch.busy) {
       this.say(y.line('forageBusy'), 0.2, 1.6);
       return false;

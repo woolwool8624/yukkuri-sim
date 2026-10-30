@@ -167,7 +167,7 @@ export class Branch {
   /** 拾いに行く。枝が地面にないとき・三つ編みがないとき・気絶中・餌を拾っている途中は何もしない */
   pickUp(): boolean {
     const y = this.y;
-    if ((this.state !== 'ground' && this.state !== 'falling') || y.forage.busy) return false;
+    if ((this.state !== 'ground' && this.state !== 'falling') || y.forage.busy || y.nestBuild.active) return false;
     if (this.state === 'falling') this.land();
     const ok = this.picker.start({
       grabPoint: () => this.stickPoint(this.grabSign * GRAB_AT),

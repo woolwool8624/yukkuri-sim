@@ -329,10 +329,19 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   for (const k of NEST_KINDS) nestKinds[`${k.name}（${CATEGORY_NAMES[k.category]}）`] = k.id;
   noLock(nest.add(y.nestStuff, 'kindId', nestKinds).name('出すもの'));
   nest.add({ f: () => y.nestStuff.spawn() }, 'f').name('出す');
-  nest.add({ f: () => y.nestStuff.clear() }, 'f').name('片付ける');
+  nest.add({ f: () => { y.nestBuild.cancel(); y.nestStuff.clear(); } }, 'f').name('片付ける');
+  // 巣作り：おうち（おうちせんげんした所）にべっどを重ねて寝床にし、たからもの（右横）・食料（左横）を固まりで並べる。仕上がるまでまとめて運ぶ
+  // （おうちが決まっていない・運ぶ物がないときは、わけを言うだけ）
+  nest.add({
+    f: () => {
+      if (y.nestBuild.reason()) y.nestBuild.start();
+      else y.greet.declare('declareNest', () => canAct() && !y.nestBuild.active, () => y.nestBuild.start());
+    },
+  }, 'f').name('巣作り');
+  nest.add({ f: () => y.nestBuild.cancel() }, 'f').name('巣作りをやめる');
   const nestView = { count: '' };
   nest.add(nestView, 'count').name('地面の巣材').disable().listen();
-  setInterval(() => (nestView.count = `たからもの ${y.nestStuff.count('treasure')}・べっど ${y.nestStuff.count('bedding')}`), 200);
+  setInterval(() => (nestView.count = `たからもの ${y.nestStuff.count('treasure')}・べっど ${y.nestStuff.count('bedding')}（巣 ${y.nestStuff.list(true).length + y.forage.nestFoods(true).length}）`), 200);
 
   // ホットプレート（足焼き）：乗せて焼き、「下ろす」まで焼く。焼いた時間で跳ねられない・移動できない・死ぬ（戻すのはページの読み直し）
   const grill = tools.addFolder('ホットプレート');
