@@ -10,7 +10,7 @@ import type { Area } from './Stage';
  * 飼育ケース（ガラスの水槽）：中の広さは 横 W × 奥行き D m（体 10 × 6 つ分）、壁の高さ H m。原点が床の真ん中、奥が -z。
  *   壁 … 透明なガラス（光の筋の映り込み）と、角と縁の枠。カメラの側の壁（カメラが壁の外にある面）はさらに薄くして中を見やすく
  *   床 … 床材（新聞紙・おがくず・タオル）を切り替える
- *   置く物 … 餌皿・水皿（当たる。体は乗れない）と、寝床の布（当たらない。上に乗る）。どれも奥の壁ぎわ
+ *   置く物 … 餌皿・水皿（当たる。体は乗れない）。奥の壁ぎわ。寝床は置かない（おうちせんげんした所に巣材で作る。指示）
  * 当たり：壁は外へ厚い箱（体を中へ押し返す。薄いとすり抜ける）
  */
 export const CAGE_W = 10;
@@ -25,13 +25,12 @@ const GLASS_OPACITY = 0.45;
 const GLASS_NEAR_OPACITY = 0.15;
 
 /** 置く物の場所と大きさ（m） */
-// 水皿と寝床は、ゆっくりが普通の 1/4 という体に合わせて最初の倍の大きさ（指示）。大きくした分、壁から離して並べ直した。
+// 水皿は、ゆっくりが普通の 1/4 という体に合わせて最初の倍の大きさ（指示）。大きくした分、壁から離して並べ直した。
 // 餌皿は元の大きさ（指示。大きくしても、体が乗れないので餌を置ける所は縁寄りだけで、使わない所が多かった）
 const FOOD_DISH = { x: 2.55, z: -2.1, r: 0.34, h: 0.1 };
 const WATER_DISH = { x: 3.85, z: -1.95, r: 0.6, h: 0.12 };
-const BED = { x: -3.0, z: -1.5, w: 3.4, d: 2.6, t: 0.05 };
 /**
- * といれ：砂を入れた浅いトレイ（指示）。手前の左（寝床の手前）。横 w × 奥行き d、縁の高さ h・厚み t（m）。
+ * といれ：砂を入れた浅いトレイ（指示）。手前の左。横 w × 奥行き d、縁の高さ h・厚み t（m）。
  * 体ごと乗れる（当たらない）。砂は床とほぼ同じ高さ（うんうんの塊は地面に寝そべるので、砂が高いと埋もれる）
  */
 const TOILET = { x: -3.5, z: 1.75, w: 1.9, d: 1.5, h: 0.07, t: 0.05 };
@@ -43,10 +42,6 @@ const WATER_DISH_COLORS = { lit: '#d7eaf5', shade: '#b9d4e6', deep: '#93b4cc', r
 /** 皿の縁の色の線（上から見ても縁と分かるように） */
 const FOOD_DISH_LINE = { lit: '#e9a35f', shade: '#d48a45', deep: '#b06d30', rim: '#ffe9cf' };
 const WATER_DISH_LINE = { lit: '#5f9fd0', shade: '#4a86b8', deep: '#356b98', rim: '#d9eefa' };
-const BED_COLORS = { lit: '#f6e3b8', shade: '#e8cd96', deep: '#cfae72', rim: '#fff8e6' };
-/** 寝床の縫い目 */
-const BED_STITCH = { lit: '#d9b47a', shade: '#c79e62', deep: '#a9814a', rim: '#fff3d8' };
-
 interface Glass {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   /** 外向きの法線と、壁の上の 1 点 */
@@ -169,19 +164,6 @@ export class Cage {
     dish(FOOD_DISH, FOOD_DISH_COLORS, FOOD_DISH_LINE, false);
     dish(WATER_DISH, WATER_DISH_COLORS, WATER_DISH_LINE, true);
 
-    // 寝床の布（薄い敷き物。当たらない）
-    const bedMat = mat(BED_COLORS);
-    const bedGeo = cushion(BED.w, BED.d, BED.t);
-    // 縁から少し内側をぐるりと縫い目
-    const stitchMat = mat(BED_STITCH);
-    const stitchGeo = stitch(BED.w, BED.d, BED.t);
-    this.disposables.push(bedMat, bedGeo, stitchMat, stitchGeo);
-    const bed = withOutline(bedGeo, bedMat, outline);
-    bed.add(new THREE.Mesh(stitchGeo, stitchMat));
-    bed.position.set(BED.x, 0.001, BED.z);
-    bed.rotation.y = 0.06;
-    this.object.add(bed);
-
     // といれ：角の丸い枠（縁）と、中の砂（床とほぼ同じ高さ。当たらない）
     const trayMat = mat(TOILET_COLORS);
     const trayGeo = trayRim(TOILET.w, TOILET.d, TOILET.h, TOILET.t);
@@ -268,29 +250,6 @@ function roundRect(w: number, d: number, r: number, s: THREE.Shape | THREE.Path 
   s.lineTo(-w / 2, -d / 2 + r);
   s.quadraticCurveTo(-w / 2, -d / 2, -w / 2 + r, -d / 2);
   return s;
-}
-
-/** 角の丸い薄い敷き物（横 w × 奥行き d、厚み t。底が y = 0） */
-function cushion(w: number, d: number, t: number): THREE.BufferGeometry {
-  const s = roundRect(w, d, Math.min(w, d) * 0.18) as THREE.Shape;
-  const bevel = t * 0.45;
-  const g = new THREE.ExtrudeGeometry(s, { depth: t - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 3, curveSegments: 10 });
-  // 押し出しの向き（+z）を上へ
-  g.rotateX(-Math.PI / 2);
-  g.translate(0, bevel, 0);
-  return g;
-}
-
-/** 敷き物の縫い目：縁から内側へ 0.2 m の所をぐるりと、幅 3 cm の帯（敷き物の上面に乗せる） */
-function stitch(w: number, d: number, t: number): THREE.BufferGeometry {
-  const IN = 0.2, BAND = 0.03;
-  const r = Math.min(w, d) * 0.18;
-  const s = roundRect(w - IN * 2, d - IN * 2, r * 0.7) as THREE.Shape;
-  s.holes.push(roundRect(w - (IN + BAND) * 2, d - (IN + BAND) * 2, r * 0.7 - BAND, new THREE.Path()) as THREE.Path);
-  const g = new THREE.ShapeGeometry(s, 10);
-  g.rotateX(-Math.PI / 2);
-  g.translate(0, t + 0.001, 0);
-  return g;
 }
 
 /** といれの縁：角の丸い長方形の枠（外が横 w × 奥行き d、厚み t、高さ h。底が y = 0） */

@@ -70,6 +70,7 @@ scene.add(yukkuri.vomit.object);
 scene.add(yukkuri.texts.object);
 scene.add(yukkuri.branch.object);
 scene.add(yukkuri.forage.object);
+scene.add(yukkuri.nestStuff.object);
 scene.add(yukkuri.box.object);
 scene.add(yukkuri.dishEat.object);
 scene.add(yukkuri.grill.object);

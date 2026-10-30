@@ -11,6 +11,7 @@ import { CHARACTERS } from '../character';
 import { MORU_WAG_MAX } from '../yukkuri/moru';
 import { voicesOf } from '../yukkuri/lines';
 import { STASH_MAX } from '../yukkuri/forage';
+import { CATEGORY_NAMES, NEST_KINDS, type NestPick } from '../yukkuri/nestStuff';
 import { FLOORS, MAPS } from '../world/Stage';
 import { allPresets, findPreset, isOverridden, resetPreset, saveLastPresetId, savePreset, USER_PRESET_ID } from '../yukkuri/presets';
 
@@ -321,6 +322,17 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   const forageView = { count: '' };
   forage.add(forageView, 'count').name('帽子の餌').disable().listen();
   setInterval(() => (forageView.count = `つば ${y.forage.onHat} / 8・中 ${y.forage.inHat} / ${STASH_MAX}（地面 ${y.forage.onGround}）`), 200);
+
+  // 巣材：寝床を作るために集める物（たからもの・べっど。食糧は餌集めの餌）。飼育ケースを開くと少し散らばっている
+  const nest = tools.addFolder('巣材');
+  const nestKinds: Record<string, NestPick> = { 'たからもの（ランダム）': 'treasure', 'べっど（ランダム）': 'bedding' };
+  for (const k of NEST_KINDS) nestKinds[`${k.name}（${CATEGORY_NAMES[k.category]}）`] = k.id;
+  noLock(nest.add(y.nestStuff, 'kindId', nestKinds).name('出すもの'));
+  nest.add({ f: () => y.nestStuff.spawn() }, 'f').name('出す');
+  nest.add({ f: () => y.nestStuff.clear() }, 'f').name('片付ける');
+  const nestView = { count: '' };
+  nest.add(nestView, 'count').name('地面の巣材').disable().listen();
+  setInterval(() => (nestView.count = `たからもの ${y.nestStuff.count('treasure')}・べっど ${y.nestStuff.count('bedding')}`), 200);
 
   // ホットプレート（足焼き）：乗せて焼き、「下ろす」まで焼く。焼いた時間で跳ねられない・移動できない・死ぬ（戻すのはページの読み直し）
   const grill = tools.addFolder('ホットプレート');

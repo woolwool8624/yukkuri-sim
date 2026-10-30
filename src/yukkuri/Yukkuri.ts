@@ -22,6 +22,7 @@ import { Rest } from './rest';
 import { Puku } from './puku';
 import { Branch } from './branch';
 import { Forage } from './forage';
+import { NestStuff } from './nestStuff';
 import { PushBox } from './box';
 import { Greet } from './greet';
 import { Death } from './death';
@@ -120,6 +121,8 @@ export class Yukkuri {
   readonly branch: Branch;
   /** 餌集め（三つ編みで拾って帽子のつばに乗せる。forage.object をシーンに置いて表示する） */
   readonly forage: Forage;
+  /** 巣材（たからもの・べっど。nestStuff.object をシーンに置いて表示する） */
+  readonly nestStuff: NestStuff;
   /** 段ボール箱（障害物。体ごと押して運ぶ。box.object をシーンに置いて表示する） */
   readonly box: PushBox;
   /** あいさつ（動作の前の宣言と、挨拶） */
@@ -221,6 +224,7 @@ export class Yukkuri {
     this.puku = new Puku(this);
     this.branch = new Branch(this);
     this.forage = new Forage(this);
+    this.nestStuff = new NestStuff(this);
     this.box = new PushBox(this);
     this.greet = new Greet(this);
     this.death = new Death(this);
@@ -332,6 +336,8 @@ export class Yukkuri {
       const p = { x: c.x, z: c.z };
       if (stage.limit(p, this.stageMargin)) this.drop(0.3, p.x, p.z);
       if (this.box.shown && !this.box.fits()) this.box.clear();
+      // 巣材は片付けて、飼育ケースなら少し散らばらせる
+      this.nestStuff.mapChanged(stage.map);
     };
     this.locomotion.limit = (t) => stage.limit(t, this.stageMargin);
     stage.onChange = sync;
