@@ -49,6 +49,11 @@ export class Stage {
   private floorId: FloorId = 'newspaper';
   private cage: Cage | null = null;
   private forest: Forest | null = null;
+  /** 画面に映る範囲（update で今のカメラから作り直す） */
+  private readonly frustum = new THREE.Frustum();
+  private readonly viewProj = new THREE.Matrix4();
+  private readonly sphere = new THREE.Sphere();
+  private viewed = false;
 
   constructor(private readonly bodyMaterial: THREE.ShaderMaterial, private readonly outlineMaterial: THREE.ShaderMaterial) {
     const saved = loadJSON<{ map?: MapId; floor?: FloorId }>(STORAGE_KEY);
@@ -130,6 +135,11 @@ export class Stage {
   /** 点（x, z）が洞穴（大木のうろ）の幹の近くか（森のとき。中も含む） */
   nearCave(x: number, z: number): boolean {
     return this.forest?.nearCave(x, z) ?? false;
+  }
+
+  /** 自然の中の餌を置く所（森のとき）：種類と、点のまわり near〜far m に n 個 */
+  get foodSpots(): readonly { kind: string; x: number; z: number; near: number; far: number; n: number }[] {
+    return this.forest?.foodSpots ?? [];
   }
 
   /** 苔の生える所（森のとき）：物のすぐ脇の点と、物のふちに沿う向き */
@@ -219,8 +229,23 @@ export class Stage {
     return best;
   }
 
+  /**
+   * 地面の点（x, z）に置いた高さ h m ほどの物が、カメラに映る範囲（画面の内側）にかかるか。
+   * カメラをまだ受け取っていなければ、映っていることにする（見ている前に物が現れないよう）
+   */
+  seen(x: number, z: number, h: number): boolean {
+    if (!this.viewed) return true;
+    this.sphere.center.set(x, h / 2, z);
+    this.sphere.radius = h;
+    return this.frustum.intersectsSphere(this.sphere);
+  }
+
   /** 毎フレーム（カメラの位置で見え方を変える物があれば） */
   update(camera: THREE.Camera, target?: THREE.Vector3): void {
+    camera.updateMatrixWorld();
+    this.viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.viewProj);
+    this.viewed = true;
     this.cage?.update(camera.position);
     this.forest?.update(camera, target);
   }

@@ -18,6 +18,9 @@ export const FOODS: FoodKind[] = [
   { id: 'acorn', name: '木の実', quality: 'normal' },
   { id: 'grass', name: '草', quality: 'low' },
   { id: 'bug', name: '虫', quality: 'low' },
+  // 自然の中に生えている餌（森・平地。2026-10-31）
+  { id: 'mushroom', name: 'きのこ', quality: 'normal' },
+  { id: 'flower', name: 'お花', quality: 'low' },
 ];
 
 /** id の食べ物 */

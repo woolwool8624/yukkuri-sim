@@ -9,6 +9,7 @@ import { HatStash } from './hatStash';
 import { loadJSON, saveJSON } from '../platform/storage';
 import { findFood, type FoodKind } from './foods';
 import { HOLLOW_DARKEN } from './nestStuff';
+import type { MapId } from '../world/Stage';
 import type { Yukkuri } from './Yukkuri';
 
 /**
@@ -49,6 +50,8 @@ interface Item {
   nest: boolean;
   /** うろの中で暗がりに沈めている（材質を沈めた写しに差し替えている） */
   dark: boolean;
+  /** 生えている（草・きのこ・お花。地面から立った姿。三つ編みで摘むと、横倒しの摘んだ姿になる） */
+  rooted: boolean;
 }
 
 /** 巣作りが運ぶ地面の餌の持ち手 */
@@ -117,12 +120,39 @@ const ACORN_CAP = { lit: '#8a6a44', shade: '#634a2c', deep: '#3e2c18', rim: '#d8
 const GRASS = { lit: '#9bd06a', shade: '#6aa043', deep: '#41712a', rim: '#eaf8d0' };
 const BUG = { lit: '#5a8a5a', shade: '#2f5a3c', deep: '#173024', rim: '#c9f0d8' };
 const BUG_LEG = { lit: '#3a3a30', shade: '#24241e', deep: '#121210', rim: '#88887a' };
+/**
+ * 食べられるきのこ（傘はこげ茶に白い縁。森の飾りの赤いきのこ・薄茶のきのこと見分けられるよう、色を変える）と、
+ * たんぽぽ（黄色い花・緑の茎と葉）
+ */
+const MUSH_CAP = { lit: '#8f5b32', shade: '#6e4224', deep: '#4b2b16', rim: '#f0d6bc' };
+const MUSH_STEM = { lit: '#f3ead8', shade: '#ddd0b6', deep: '#bcae90', rim: '#ffffff' };
+const MUSH_GILL = { lit: '#d8c4a2', shade: '#bca684', deep: '#988361', rim: '#fff6e6' };
+const PETAL = { lit: '#ffd83a', shade: '#f2b81c', deep: '#c98d10', rim: '#fff6c4' };
+const STEM = { lit: '#7fb84f', shade: '#5f9638', deep: '#447026', rim: '#e3f6c9' };
+/**
+ * 自然の中の餌（マップを開いたときに置く。指示：マップごとに合う種類と場所）。森は Stage.foodSpots（森が決める）、
+ * 平地は広場の真ん中のまわりに、草のかたまり・たんぽぽ・虫を散らす。飼育ケースは自然ではないので置かない（餌皿に飼い主が出す）
+ */
+const OPEN_FOOD: { kind: string; n: number; per: number }[] = [
+  { kind: 'grass', n: 3, per: 2 },
+  { kind: 'flower', n: 3, per: 1 },
+  { kind: 'bug', n: 2, per: 1 },
+];
+/** 平地で自然の餌を置く範囲（原点からの距離 m）と、ゆっくりから離す距離 */
+const OPEN_FOOD_R = [2.2, 6.5];
+const WILD_AWAY = 1.2;
+/**
+ * 自然の中の餌の補充（指示）：実時間 3 分ごと、または地面の自然の餌がなくなったときに、1 個ずつ置き直す。
+ * 置くのはカメラに映っていない所だけ。数はマップを開いたときに置いた数まで。置けなければ WILD_RETRY ミリ秒おきに試す
+ */
+const WILD_REFILL = 180_000;
+const WILD_RETRY = 1_000;
 
 export class Forage {
   /** 餌（体と一緒に震えないよう、シーンに直接置く） */
   readonly object = new THREE.Group();
   /** 次に出す餌の種類（'random' でランダム） */
-  kindId: 'random' | 'acorn' | 'grass' | 'bug' | 'manju' = 'random';
+  kindId: 'random' | 'acorn' | 'grass' | 'bug' | 'mushroom' | 'flower' | 'manju' = 'random';
   private readonly items: Item[] = [];
   private readonly picker: BraidPick;
   private readonly stash: HatStash;
@@ -138,6 +168,11 @@ export class Forage {
   private carryT = 0;
   private readonly carryStop = new THREE.Vector3();
   private word: Word | null = null;
+  /** 自然の中の餌：今のマップ・種類ごとに置いた数（補充はここまで）・前に補充した時刻と、最後に試した時刻（performance.now） */
+  private wildMap: MapId | null = null;
+  private readonly wildQuota = new Map<string, number>();
+  private wildClock = 0;
+  private wildTried = 0;
   private readonly mats: Record<string, THREE.Material> = {};
   /** 材質の、うろの中で沈めた写し（使うときに作る） */
   private readonly darkMats = new Map<THREE.Material, THREE.Material>();
@@ -161,6 +196,11 @@ export class Forage {
     mat('bug', BUG);
     mat('leg', BUG_LEG);
     mat('manju', MANJU);
+    mat('mushCap', MUSH_CAP);
+    mat('mushStem', MUSH_STEM);
+    mat('gill', MUSH_GILL, true);
+    mat('petal', PETAL, true);
+    mat('stem', STEM, true);
     this.outline = createAccessoryOutlineMaterial(y.outlineMaterial);
   }
 
@@ -226,15 +266,144 @@ export class Forage {
         }
       }
     }
-    const object = this.makeItem(kind.id);
-    object.scale.setScalar(R * SIZE);
+    this.add(kind.id, p.x, p.z, base, false);
+  }
+
+  /** 餌を 1 個作って（x, z）の地面に置く（rooted なら生えている姿） */
+  private add(id: string, x: number, z: number, base: number, rooted: boolean): void {
+    const object = this.makeItem(id);
+    object.scale.setScalar(this.y.shape.radius * SIZE);
     this.object.add(object);
     const item: Item = {
-      kind, object, state: 'ground', slot: -1, yaw: Math.random() * Math.PI * 2, t: 0,
-      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0, nest: false, dark: false,
+      kind: findFood(id), object, state: 'ground', slot: -1, yaw: Math.random() * Math.PI * 2, t: 0,
+      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0, nest: false, dark: false, rooted,
     };
+    this.setRosette(item);
     this.items.push(item);
-    this.placeOnGround(item, p.x, p.z, base);
+    this.placeOnGround(item, x, z, base);
+  }
+
+  /** 生えている餌を摘む：横倒しの摘んだ姿にする（たんぽぽの根元の葉は地面に残すので消す） */
+  private unroot(it: Item): void {
+    it.rooted = false;
+    this.setRosette(it);
+    it.object.quaternion.copy(this.groundQuat(it));
+  }
+
+  /** たんぽぽの根元の葉（地面に広がる葉）は、生えている間だけ見せる */
+  private setRosette(it: Item): void {
+    const r = it.object.getObjectByName('rosette');
+    if (r) r.visible = it.rooted;
+  }
+
+  /**
+   * 自然の中の餌を置く（マップを開いたとき）。生える物（草・きのこ・お花）は生えている姿で。置く所は、行ける範囲の内側で、
+   * 物（木・岩・皿）・壁・といれ・根・うろのまわり・ほかの餌に重ならず、ゆっくりから少し離れた所。草は草むらの脇なので草むらは気にしない
+   */
+  private stockWild(map: MapId): void {
+    this.wildMap = map;
+    this.wildQuota.clear();
+    this.wildClock = performance.now();
+    const st = this.y.stage;
+    if (!st || map === 'cage') return;
+    if (map === 'forest') {
+      for (const f of st.foodSpots) this.wildAround(f.kind, f.x, f.z, f.near, f.far, f.n, false);
+    } else {
+      // 平地：原点のまわりに、まとまり（草は 2 本ずつ寄せて）を散らす
+      for (const f of OPEN_FOOD) for (let i = 0; i < f.n; i++) this.wildAround(f.kind, ...this.openSpot(), 0, f.per > 1 ? 0.25 : 0.01, f.per, false);
+    }
+    for (const it of this.items) {
+      if (it.state === 'ground' && !it.nest) this.wildQuota.set(it.kind.id, (this.wildQuota.get(it.kind.id) ?? 0) + 1);
+    }
+  }
+
+  /** 平地で自然の餌のまとまりを置く点（原点のまわり OPEN_FOOD_R） */
+  private openSpot(): [number, number] {
+    const a = Math.random() * Math.PI * 2, d = OPEN_FOOD_R[0] + Math.random() * (OPEN_FOOD_R[1] - OPEN_FOOD_R[0]);
+    return [Math.sin(a) * d, Math.cos(a) * d];
+  }
+
+  /**
+   * 自然の中の餌を、点（x, z）のまわり near〜far m の所に n 個置く（置けた数）。生える物（草・きのこ・お花）は生えている姿で。
+   * 置く所は、行ける範囲の内側で、物（木・岩・皿）・壁・といれ・根・うろのまわり・ほかの餌に重ならず、ゆっくりから少し離れた所。
+   * 草は草むらの脇なので草むらは気にしない。hidden ならカメラに映っていない所だけ（補充のとき）
+   */
+  private wildAround(id: string, x: number, z: number, near: number, far: number, n: number, hidden: boolean): number {
+    const st = this.y.stage;
+    if (!st) return 0;
+    const s = this.y.shape.radius * SIZE;
+    const growing = id === 'grass' || id === 'mushroom' || id === 'flower';
+    const fits = (x: number, z: number) => {
+      const r = s * 0.8;
+      if (!st.inside(x, z, r + 0.1) || st.overlapProp(x, z, r) || st.blocked(x, z, r) || st.inToilet(x, z, -r)) return false;
+      if (st.onRoot(x, z, r) || st.nearCave(x, z) || (id !== 'grass' && st.inCover(x, z, r))) return false;
+      if (Math.hypot(x - this.y.center.x, z - this.y.center.z) < WILD_AWAY) return false;
+      if (hidden && st.seen(x, z, s * 1.5)) return false;
+      return this.items.every((i) => Math.hypot(i.object.position.x - x, i.object.position.z - z) > s * 2.2);
+    };
+    let placed = 0;
+    for (let k = 0; k < 60 && placed < n; k++) {
+      const a = Math.random() * Math.PI * 2, d = near + Math.random() * (far - near);
+      const px = x + Math.sin(a) * d, pz = z + Math.cos(a) * d;
+      if (!fits(px, pz)) continue;
+      this.add(id, px, pz, 0, growing);
+      placed++;
+    }
+    return placed;
+  }
+
+  /**
+   * 自然の中の餌の補充（update から）：実時間 WILD_REFILL ごと、または地面の自然の餌がなくなったら、足りない種類を 1 個、
+   * カメラに映っていない所に置く。マップを開いたときの数まで（減っていなければ時計を戻すだけ）
+   */
+  private refillWild(): void {
+    const st = this.y.stage;
+    if (!st || this.wildMap !== st.map || this.wildQuota.size === 0) return;
+    const now = performance.now();
+    const left = new Map<string, number>();
+    let total = 0;
+    for (const it of this.items) {
+      if (it.nest || (it.state !== 'ground' && it.state !== 'picking')) continue;
+      left.set(it.kind.id, (left.get(it.kind.id) ?? 0) + 1);
+      total++;
+    }
+    // 足りない種類（置いた数より少ないもの。足りない数で重みをつけて選ぶ）
+    const short: [string, number][] = [];
+    let sum = 0;
+    for (const [id, q] of this.wildQuota) {
+      const d = q - (left.get(id) ?? 0);
+      if (d > 0) {
+        short.push([id, d]);
+        sum += d;
+      }
+    }
+    if (sum === 0) {
+      this.wildClock = now;
+      return;
+    }
+    if (total > 0 && now - this.wildClock < WILD_REFILL) return;
+    if (now - this.wildTried < WILD_RETRY) return;
+    this.wildTried = now;
+    let pick = Math.random() * sum;
+    let id = short[0][0];
+    for (const [k, d] of short) {
+      if ((pick -= d) < 0) {
+        id = k;
+        break;
+      }
+    }
+    // その種類の置き場所（森は森が決めた所のどれか、平地は原点のまわりのどこか）
+    let ok = false;
+    if (this.wildMap === 'forest') {
+      const spots = st.foodSpots.filter((f) => f.kind === id);
+      for (let k = 0; k < spots.length * 2 && !ok; k++) {
+        const f = spots[Math.floor(Math.random() * spots.length)];
+        ok = this.wildAround(id, f.x, f.z, f.near, f.far, 1, true) > 0;
+      }
+    } else {
+      for (let k = 0; k < 6 && !ok; k++) ok = this.wildAround(id, ...this.openSpot(), 0, 0.25, 1, true) > 0;
+    }
+    if (ok) this.wildClock = now;
   }
 
   /** 一番近い地面の餌を拾いに行く（拾い方が「帽子に直接入れる」なら pickIntoHat） */
@@ -384,12 +553,14 @@ export class Forage {
    * マップを変えたとき：地面の餌（巣に並べた餌も）を片付ける。帽子のつば・中の餌はそのまま
    * （前のマップの場所に残り、森の巣の餌が飼育ケースの外に出て、次の巣作りで届かずにあきらめていた）
    */
-  mapChanged(): void {
+  mapChanged(map: MapId): void {
     this.picker.cancel();
     for (const it of this.items.filter((i) => i.state === 'ground' || i.state === 'falling')) {
       this.object.remove(it.object);
       this.items.splice(this.items.indexOf(it), 1);
     }
+    // 自然の中の餌を置く（森・平地）
+    this.stockWild(map);
   }
 
   /** 固定時間刻みで呼ぶ */
@@ -397,6 +568,7 @@ export class Forage {
     const y = this.y;
     this.stash.update(dt);
     this.picker.update(dt);
+    this.refillWild();
     if (this.carrying) {
       // 持って帽子のそばへ戻っている：着いたら放り込む（ほかの行き先を指示されても、あきらめても、その場から放る）
       this.carryT += dt;
@@ -415,6 +587,8 @@ export class Forage {
       if (!y.outfit.hat || y.locomotion.isLying || y.locomotion.tilted || tilt > SPILL_TILT) this.spill();
     }
     for (const it of this.items) {
+      // 生えている餌は、三つ編みで持ち上げた（拾われて地面を離れた）ら摘んだ姿に
+      if (it.rooted && it.state !== 'ground' && it.state !== 'picking') this.unroot(it);
       this.shade(it);
       it.t += dt;
       if (it.state === 'toss' && it.t >= TOSS_TIME) {
@@ -777,10 +951,16 @@ export class Forage {
     it.object.position.set(x, this.groundY(it), z);
   }
 
-  /** 地面に置いたときの向き：木の実は横倒し、草は寝かせる、虫は立つ（どれも上向きまわりに yaw） */
+  /**
+   * 地面に置いたときの向き：木の実は横倒し、草は寝かせる、虫は立つ（どれも上向きまわりに yaw）。
+   * 生えている草は葉を上へ立て、きのこ・お花は生えていれば立ち、摘んだら横倒し
+   */
   private groundQuat(it: Item): THREE.Quaternion {
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), it.yaw);
-    if (it.kind.id === 'acorn') q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
+    const id = it.kind.id;
+    const lie = id === 'acorn' || (!it.rooted && (id === 'mushroom' || id === 'flower'));
+    if (lie) q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
+    if (it.rooted && id === 'grass') q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
     return q;
   }
 
@@ -793,12 +973,16 @@ export class Forage {
   /** 地面に置いたときの中心の高さ */
   private groundY(it: Item): number {
     const s = this.y.shape.radius * SIZE;
-    return (it.kind.id === 'acorn' ? 0.42 : this.restLift(it.kind.id)) * s + it.base;
+    if (it.rooted) return it.base; // 生えている物は根元が原点
+    const id = it.kind.id;
+    // 横倒しのきのこ・お花は、傘・花の半径だけ浮かせる
+    const lift = id === 'acorn' ? 0.42 : id === 'mushroom' ? 0.36 : id === 'flower' ? 0.24 : this.restLift(id);
+    return lift * s + it.base;
   }
 
   /** 立てて置いたとき、中心から底までの高さ（単位の大きさ） */
   private restLift(id: string): number {
-    return id === 'acorn' ? 0.05 : id === 'grass' ? 0.05 : id === 'manju' ? 0.21 : 0.2;
+    return id === 'acorn' ? 0.05 : id === 'grass' ? 0.05 : id === 'manju' ? 0.21 : id === 'mushroom' || id === 'flower' ? 0 : 0.2;
   }
 
   /** 餌の形（単位の大きさ。中心が原点、上が +y、前が +z） */
@@ -821,14 +1005,43 @@ export class Forage {
       stem.translate(0, 0.62, 0);
       add(stem, 'cap');
     } else if (id === 'grass') {
-      // 草：細長い葉 3 枚を扇に広げて寝かせた束
-      for (const a of [-0.45, 0, 0.45]) {
-        const blade = ellipsoid(0.12, 0.03, 0.75, 10);
-        blade.translate(0, 0, 0.55);
+      // 草：細長い葉 5 枚を扇に広げて寝かせた束（生えている間は根元を下に立てる。3 枚だと芽にしか見えなかった）
+      for (const [a, len] of [[-0.6, 0.8], [-0.3, 1.0], [0, 1.15], [0.3, 0.95], [0.6, 0.75]]) {
+        const blade = ellipsoid(0.13, 0.03, len * 0.6, 10);
+        blade.translate(0, 0, len * 0.55);
         blade.rotateY(a);
         blade.rotateX(-0.08);
         add(blade, 'grass');
       }
+    } else if (id === 'mushroom') {
+      // きのこ（根元が原点、上が +y）：白い太めの柄、裏にひだの見える丸い傘
+      add(new THREE.CylinderGeometry(0.1, 0.13, 0.5, 10).translate(0, 0.25, 0), 'mushStem');
+      const cap = new THREE.SphereGeometry(0.36, 18, 9, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.62, 1).translate(0, 0.46, 0);
+      add(cap, 'mushCap');
+      add(new THREE.CircleGeometry(0.34, 18).rotateX(Math.PI / 2).translate(0, 0.465, 0), 'gill');
+    } else if (id === 'flower') {
+      // たんぽぽ（根元が原点、上が +y）：細い茎の先に黄色い花（細い花びらを 2 重に並べた円盤と、ふくらんだ真ん中）、
+      // 根元にぎざぎざの葉が地面に広がる（生えている間だけ。rosette）
+      add(new THREE.CylinderGeometry(0.03, 0.04, 0.8, 6).translate(0, 0.4, 0), 'stem');
+      for (const [n, r, tilt, y0] of [[14, 0.24, 0.25, 0.8], [10, 0.17, 0.55, 0.83]] as const) {
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2 + (r < 0.2 ? 0.2 : 0);
+          const petal = ellipsoid(0.035, 0.012, r / 2, 6).translate(0, 0, r / 2).rotateX(-tilt).rotateY(a).translate(0, y0, 0);
+          add(petal, 'petal');
+        }
+      }
+      add(ellipsoid(0.09, 0.06, 0.09, 8).translate(0, 0.86, 0), 'petal');
+      const rosette = new THREE.Group();
+      rosette.name = 'rosette';
+      for (let i = 0; i < 5; i++) {
+        const leaf = ellipsoid(0.07, 0.015, 0.32, 8);
+        const p = leaf.getAttribute('position') as THREE.BufferAttribute;
+        for (let k = 0; k < p.count; k++) p.setX(k, p.getX(k) * (1 + 0.35 * Math.sin(p.getZ(k) * 40))); // ぎざぎざ
+        leaf.translate(0, 0.02, 0.3).rotateY((i / 5) * Math.PI * 2 + 0.3);
+        this.geometries.push(leaf);
+        rosette.add(withOutline(leaf, this.mats.stem, this.outline));
+      }
+      g.add(rosette);
     } else if (id === 'manju') {
       // おまんじゅう：下がやや平らな丸（「ごはん」の食べ物と同じ形）
       const body = new THREE.SphereGeometry(0.6, 24, 14);

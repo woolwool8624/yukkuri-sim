@@ -101,6 +101,19 @@ export class Forest {
    * 物のすぐ脇の点と、物のふちに沿う向き（単位ベクトル）
    */
   readonly mossSites: { x: number; z: number; tx: number; tz: number }[] = [];
+  /**
+   * 自然の中の餌を置く所（餌集めの Forage がマップを開いたときに置く）：種類と、点（x, z）のまわり near〜far m に n 個。
+   * 木の実はどんぐりの木（広場の木）の下、きのこは切り株・倒木の根元、虫は倒木・岩の脇、草は草むらの脇
+   */
+  readonly foodSpots: { kind: string; x: number; z: number; near: number; far: number; n: number }[] = [
+    { kind: 'acorn', x: -3.4, z: 1.9, near: 0.75, far: 1.8, n: 4 },
+    { kind: 'mushroom', x: 3.6, z: 1.7, near: 0.6, far: 0.85, n: 2 },
+    { kind: 'mushroom', x: -1.4, z: -3.6, near: 0.48, far: 0.7, n: 1 },
+    { kind: 'mushroom', x: -5.6, z: 2.7, near: 0.5, far: 0.8, n: 1 },
+    { kind: 'bug', x: -5.6, z: 2.7, near: 0.5, far: 1.2, n: 1 },
+    { kind: 'bug', x: 0.9, z: -4.7, near: 0.6, far: 0.95, n: 1 },
+    { kind: 'bug', x: 6.4, z: 2.3, near: 0.8, far: 1.15, n: 1 },
+  ];
   /** 空と遠くの色（霧） */
   readonly sky = '#e3ead9';
   private readonly trees: Tree[] = [];
@@ -336,6 +349,7 @@ export class Forest {
     }
 
     // 草むら（当たらない）：細い葉の束
+    let grassFood = 0;
     const grassMat = mat(GRASS, true);
     for (const [x0, z0, s] of [
       [-1.8, 3.6, 1], [2.6, 3.9, 0.8], [5.4, -0.4, 0.9], [-6.6, 1.0, 1.1], [-0.4, -2.6, 0.7], [1.9, -1.2, 0.8],
@@ -343,6 +357,8 @@ export class Forest {
     ]) {
       if (this.nearCave(x0, z0)) continue;
       const [x, z] = this.offRoots(x0, z0, 0.4 * s);
+      // 食べられる草は、はじめの 3 つの草むらの脇に生える
+      if (grassFood++ < 3) this.foodSpots.push({ kind: 'grass', x, z, near: 0.45 * s + 0.06, far: 0.45 * s + 0.3, n: 1 });
       const geo = grassClump(0.32 * s, 0.45 * s, 26, this.seed++);
       this.disposables.push(geo);
       const m = new THREE.Mesh(geo, grassMat);
@@ -376,6 +392,8 @@ export class Forest {
       g.position.set(x, 0, z);
       g.rotation.y = this.rand() * Math.PI * 2;
       this.object.add(g);
+      // 飾りのきのこにも、餌・巣材を重ねない（虫が陰に隠れた）
+      this.covers.push({ x, z, r: cr * 1.3 });
     }
 
     // 洞穴（入口は広場の真ん中を向く）

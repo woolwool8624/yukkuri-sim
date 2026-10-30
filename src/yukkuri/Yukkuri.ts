@@ -344,7 +344,7 @@ export class Yukkuri {
       this.home.useMap(stage.map);
       this.nestBuild.cancel();
       this.nestStuff.mapChanged(stage.map);
-      this.forage.mapChanged();
+      this.forage.mapChanged(stage.map);
     };
     this.locomotion.limit = (t) => stage.limit(t, this.stageMargin);
     this.locomotion.route = (from, to) => stage.via(from.x, from.z, to.x, to.z, this.shape.radius);

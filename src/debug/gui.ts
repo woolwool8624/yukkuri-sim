@@ -311,7 +311,7 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
 
   // 餌集め：小さな餌を 1 個ずつ出し、三つ編みで拾って帽子のつばに乗せる
   const forage = tools.addFolder('餌集め');
-  noLock(forage.add(y.forage, 'kindId', { ランダム: 'random', 木の実: 'acorn', 草: 'grass', 虫: 'bug', おまんじゅう: 'manju' }).name('出す餌'));
+  noLock(forage.add(y.forage, 'kindId', { ランダム: 'random', 木の実: 'acorn', 草: 'grass', 虫: 'bug', きのこ: 'mushroom', お花: 'flower', おまんじゅう: 'manju' }).name('出す餌'));
   noLock(forage.add(y.forage, 'pickMode', { つばに乗せる: 'brim', 帽子に直接入れる: 'hat' }).name('拾い方'));
   forage.add({ f: () => y.forage.spawn() }, 'f').name('餌を出す');
   forage.add({ f: () => y.forage.pickNearest() }, 'f').name('拾う（近いものから）');
