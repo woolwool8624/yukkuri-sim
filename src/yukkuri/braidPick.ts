@@ -30,6 +30,13 @@ const SIDE_GAP = 1.25;
 const SIDE_AHEAD = 0.15;
 /** 止まる所が皿などに重なるかを見る、体の底の広がり（胴の半径に対する比） */
 const PROP_CLEAR = 0.8;
+/**
+ * 止まる所が皿などにかかるとき、行ける向きを探す刻み（rad）と、左右それぞれ何刻みまで回すか（12 刻みでちょうど反対側）。
+ * どの向きもだめなら、物から SIDE_GAP_FAR（胴の半径に対する比）まで離れて探す
+ */
+const PROP_TRY_STEP = Math.PI / 12;
+const PROP_TRIES = 12;
+const SIDE_GAP_FAR = 1.45;
 /** 止まる所がこれより近ければ（胴の半径に対する比）歩かずにその場で向きだけ変える（すぐ後ろへは回り込めず、近くを回り続ける） */
 const NEAR_ENOUGH = 1.0;
 /** 向きを合わせる：差がこれ（rad）より小さくなるか、この時間（秒）たったら、かがむ */
@@ -264,18 +271,34 @@ export class BraidPick {
     // 基準にするのは拾う物が載っている物（止まる所が一番深く重なる物にすると、隣の水皿を基準にして水皿の上に寄ろうとした）
     const prop = stage?.overlapProp(t.x, t.z, R * PROP_CLEAR) ? (stage.overlapProp(p.x, p.z, 0) ?? stage.overlapProp(t.x, t.z, R * PROP_CLEAR)) : null;
     if (stage && prop) {
+      // 寄れば押し出されて止まるのでかかってもよいのは、拾う物が載っている物だけ（床の物で基準の皿にかかるのを許すと、
+      // 餌皿と水皿の間の物で水皿の上に寄ろうとして着かず、あきらめていた）
+      const onProp = stage.overlapProp(p.x, p.z, 0);
       const base = new THREE.Vector3(p.x - prop.x, 0, p.z - prop.z);
       // 物のほぼ真ん中なら、今いる側から
       if (base.lengthSq() < (R * 0.1) ** 2) base.copy(toward).negate();
       const a0 = Math.atan2(base.x, base.z);
-      const out = new THREE.Vector3();
-      for (const k of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6]) {
-        const a = a0 + k * (Math.PI / 6);
-        out.set(Math.sin(a), 0, Math.cos(a));
-        t.copy(p).addScaledVector(out, R * SIDE_GAP);
-        // 行ける範囲の内側で、ほかの皿（隣の水皿など）にかからない所（この皿にかかるのは、寄れば押し出されて止まるのでよい）
-        const free = stage.props.every((q) => q === prop || Math.hypot(t.x - q.x, t.z - q.z) > q.r + R * PROP_CLEAR);
-        if (stage.inside(t.x, t.z, y.stageMargin) && free) break;
+      const out = new THREE.Vector3(), c = new THREE.Vector3();
+      // 行ける範囲の内側で、ほかの皿（隣の水皿など）にかからない所。向きは PROP_TRY_STEP ずつ左右へ回し（皿の間は行ける向きが狭い）、
+      // どの向きもだめなら少し離れて探す。それでもなければ、一番かからない所
+      let best = Infinity;
+      for (const gap of [SIDE_GAP, SIDE_GAP_FAR]) {
+        for (let k = 0; k <= PROP_TRIES && best > 0; k++) {
+          for (const sgn of k === 0 || k === PROP_TRIES ? [1] : [1, -1]) {
+            const a = a0 + sgn * k * PROP_TRY_STEP;
+            c.set(Math.sin(a), 0, Math.cos(a));
+            const x = p.x + c.x * R * gap, z = p.z + c.z * R * gap;
+            let over = stage.inside(x, z, y.stageMargin) ? 0 : 1;
+            for (const q of stage.props) if (q !== onProp) over = Math.max(over, q.r + R * PROP_CLEAR - Math.hypot(x - q.x, z - q.z));
+            if (over < best) {
+              best = over;
+              out.copy(c);
+              t.set(x, 0, z);
+            }
+            if (best <= 0) break;
+          }
+        }
+        if (best <= 0) break;
       }
       // 体の右（side +1）が拾う物（-out）を向く：右 = (f.z, -f.x) = -out × side
       const right = out.clone().multiplyScalar(-this.side);
