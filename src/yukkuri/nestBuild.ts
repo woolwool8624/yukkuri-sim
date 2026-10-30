@@ -53,12 +53,12 @@ const CLUSTER_SIDE = 0.85;
 /** 固まりが寝床に乗らないよう避ける、寝床の広がり（半径。m、飼育ケースの縮尺） */
 const BED_SPAN = 0.65;
 /**
- * 当たり棒を固まりに詰めるとき：寝床のふちに沿う向きに寝かせ、棒の長さに沿って並べた円（真ん中から STICK_DOTS m の所に、
- * 半径 STICK_DOT_R m。飼育ケースの縮尺）で場所を取る。長い棒を丸い物 1 つとして扱うと広い所を取って固まりから離れ、
- * 細い物 1 つとして扱うと両端にほかのたからものが重なった
+ * 細長い物（当たり棒・羽根。NestKind.len）を固まりに詰めるとき：寝床のふちに沿う向きに寝かせ、長さに沿って並べた円
+ * （真ん中から長さの STICK_DOTS 倍の所に、半径は長さの STICK_DOT_R 倍）で場所を取る。長い棒を丸い物 1 つとして扱うと
+ * 広い所を取って固まりから離れ、細い物 1 つとして扱うと両端にほかのたからものが重なった
  */
-const STICK_DOTS = [-0.42, 0, 0.42];
-const STICK_DOT_R = 0.15;
+const STICK_DOTS = [-0.35, 0, 0.35];
+const STICK_DOT_R = 0.125;
 /** 固まりで隣と空ける間（半径の和に対する比）・内側から探す輪の数 */
 const CLUSTER_GAP = 0.85;
 const CLUSTER_RINGS = 14;
@@ -391,28 +391,34 @@ export class NestBuild {
       while (ring < BED_RINGS.length - 1 && k >= BED_RINGS[ring][1]) k -= BED_RINGS[ring++][1];
       const [r, count] = BED_RINGS[ring];
       const a = home.yaw + (k / count) * Math.PI * 2 + ring * 0.4 + (ring === BED_RINGS.length - 1 ? Math.random() : 0);
-      this.slot.set(center.x + Math.sin(a) * r * s, 0, center.z + Math.cos(a) * r * s);
-      y.stage?.limit(this.slot, y.nestStuff.radius(tg.it) * 0.5);
+      const rr = y.nestStuff.radius(tg.it);
+      // 壁（うろの幹など）にかかる・おうちとうろの中と外が違うなら、おうちの側へ寄せる
+      for (let t = 1; t >= 0; t -= 0.1) {
+        this.slot.set(center.x + Math.sin(a) * r * s * t, 0, center.z + Math.cos(a) * r * s * t);
+        if (this.reachable(this.slot.x, this.slot.z, rr * 0.5)) break;
+      }
+      y.stage?.limit(this.slot, rr * 0.5);
       this.bed = true;
       return;
     }
     const treasure = tg.kind === 'stuff';
     const mid = center.clone().addScaledVector(right, (treasure ? 1 : -1) * CLUSTER_SIDE * s);
-    // 場所の取り方（上から見た円の集まり）：当たり棒は寝床のふちに沿う向きの棒、ほかは丸
+    // 場所の取り方（上から見た円の集まり）：細長い物は寝床のふちに沿う向きの棒、ほかは丸
     const stickYaw = (x: number, z: number) => {
       const out = new THREE.Vector3(x - home.x, 0, z - home.z);
       if (out.lengthSq() < 1e-6) out.copy(right);
       return Math.atan2(out.z, -out.x);
     };
-    const stickDots = (x: number, z: number, yaw: number): Spot[] =>
-      STICK_DOTS.map((d) => ({ x: x + Math.sin(yaw) * d * s, z: z + Math.cos(yaw) * d * s, r: STICK_DOT_R * s }));
+    const stickDots = (len: number, x: number, z: number, yaw: number): Spot[] =>
+      STICK_DOTS.map((d) => ({ x: x + Math.sin(yaw) * d * len * s, z: z + Math.cos(yaw) * d * len * s, r: STICK_DOT_R * len * s }));
     const footprint = (i: NestItem): Spot[] => {
       const p = i.object.position;
-      return i.kind.id === 'stick' ? stickDots(p.x, p.z, i.object.rotation.y) : [{ x: p.x, z: p.z, r: y.nestStuff.radius(i) }];
+      return i.kind.len ? stickDots(i.kind.len, p.x, p.z, i.object.rotation.y) : [{ x: p.x, z: p.z, r: y.nestStuff.radius(i) }];
     };
-    const stick = tg.kind === 'stuff' && tg.it.kind.id === 'stick';
-    const r = tg.kind === 'stuff' ? (stick ? STICK_DOT_R * s : y.nestStuff.radius(tg.it)) : tg.f.r;
-    const shape = (x: number, z: number): Spot[] => (stick ? stickDots(x, z, stickYaw(x, z)) : [{ x, z, r }]);
+    const len = tg.kind === 'stuff' ? tg.it.kind.len ?? 0 : 0;
+    const stick = len > 0;
+    const r = tg.kind === 'stuff' ? (stick ? STICK_DOT_R * len * s : y.nestStuff.radius(tg.it)) : tg.f.r;
+    const shape = (x: number, z: number): Spot[] => (stick ? stickDots(len, x, z, stickYaw(x, z)) : [{ x, z, r }]);
     const taken: Spot[] = treasure
       ? y.nestStuff.list(true).filter((i) => i.kind.category === 'treasure').flatMap(footprint)
       : y.forage.nestFoods(true).map((v) => ({ x: v.object.position.x, z: v.object.position.z, r: v.r }));
@@ -421,12 +427,25 @@ export class NestBuild {
     if (stick) this.slotYaw = stickYaw(this.slot.x, this.slot.z);
   }
 
-  /** 固まりの置き場：真ん中 mid から内側の輪から順に、隣と重ならず、行ける範囲の内側で皿・といれにかからない所 */
+  /**
+   * 置く所にしてよいか：中心（x, z）・半径 r の円が壁（うろの幹・木・岩など）にかからず、おうちと同じ側（うろの中か外か）にある
+   * （寝床の輪や固まりが、うろの壁の向こう側に出た）
+   */
+  private reachable(x: number, z: number, r: number): boolean {
+    const st = this.y.stage;
+    const home = this.y.home.current;
+    if (!st) return true;
+    if (st.blocked(x, z, r + 0.03)) return false;
+    return !home || st.inHollow(x, z) === st.inHollow(home.x, home.z);
+  }
+
+  /** 固まりの置き場：真ん中 mid から内側の輪から順に、隣と重ならず、行ける範囲の内側で皿・といれ・壁にかからない所 */
   private clusterSpot(mid: THREE.Vector3, r: number, shape: (x: number, z: number) => Spot[], taken: Spot[]): THREE.Vector3 {
     const st = this.y.stage;
     const step = Math.max(r, 0.04) * 1.1;
     const fits = (x: number, z: number) => shape(x, z).every((c) => {
       if (st && (!st.inside(c.x, c.z, c.r + 0.05) || st.overlapProp(c.x, c.z, c.r + 0.05) || st.inToilet(c.x, c.z, -c.r))) return false;
+      if (!this.reachable(c.x, c.z, c.r)) return false;
       return taken.every((o) => Math.hypot(c.x - o.x, c.z - o.z) >= (c.r + o.r) * CLUSTER_GAP);
     });
     for (let ring = 0; ring <= CLUSTER_RINGS; ring++) {

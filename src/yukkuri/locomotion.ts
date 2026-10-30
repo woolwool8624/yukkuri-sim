@@ -675,6 +675,13 @@ export class Locomotion {
 
   /** 行き先を行ける範囲の内側へ寄せる（マップに壁があるとき。Yukkuri が渡す） */
   limit: ((p: Vector3) => void) | null = null;
+  /**
+   * 行き先との間に回り込む物（森の大木のうろの幹）があれば、その手前で向かう道の途中の点（なければ null。Yukkuri が渡す）。
+   * 毎回、今いる所から決め直す（覚えておく道はない）
+   */
+  route: ((from: Vector3, to: Vector3) => { x: number; z: number } | null) | null = null;
+  /** 今向かっている点（行き先か、道の途中の点） */
+  private readonly aim = new Vector3();
 
   /** 行き先を決める。mode を渡すと、そこへ向かう間だけその移動方法にする（跳ねられない体型は這う） */
   moveTo(x: number, z: number, mode: MoveMode | null = null): void {
@@ -763,10 +770,12 @@ export class Locomotion {
     this.spin += (b.rotation.angleTo(this.prevRotation) / dt - this.spin) * Math.min(1, dt * SPIN_SMOOTH);
     this.prevRotation.copy(b.rotation);
 
-    // 目的地までの距離と向き
-    const dx = this.target.x - b.center.x;
-    const dz = this.target.z - b.center.z;
-    const dist = Math.hypot(dx, dz);
+    // 目的地までの距離と向き（間にうろの幹があれば、道の途中の点へ向かう。距離は途中の点を通った道のり）
+    const via = this.hasTarget ? this.route?.(b.center, this.target) ?? null : null;
+    this.aim.set(via ? via.x : this.target.x, 0, via ? via.z : this.target.z);
+    const dx = this.aim.x - b.center.x;
+    const dz = this.aim.z - b.center.z;
+    const dist = Math.hypot(dx, dz) + (via ? Math.hypot(this.target.x - via.x, this.target.z - via.z) : 0);
     const wantYaw = Math.atan2(dx, dz);
     const yawErr = wrapAngle(wantYaw - b.yaw);
     const fx = Math.sin(b.yaw), fz = Math.cos(b.yaw);
@@ -1239,7 +1248,7 @@ export class Locomotion {
       // 跳ぶ前に、今回の跳躍で向ける方向を決める（今の向きから最大 hopTurnMax まで目的地側へ）
       const b = this.body;
       const c = b.center;
-      const yawErr = wrapAngle(Math.atan2(this.target.x - c.x, this.target.z - c.z) - b.yaw);
+      const yawErr = wrapAngle(Math.atan2(this.aim.x - c.x, this.aim.z - c.z) - b.yaw);
       this.hopYaw0 = b.yaw;
       const max = (this.params.hopTurnMax * Math.PI) / 180;
       this.hopTurn = Math.max(-max, Math.min(max, yawErr));
@@ -1248,7 +1257,7 @@ export class Locomotion {
     if (s === 'crawl') {
       const b = this.body;
       const c = b.center;
-      const dx = this.target.x - c.x, dz = this.target.z - c.z;
+      const dx = this.aim.x - c.x, dz = this.aim.z - c.z;
       const yawErr = wrapAngle(Math.atan2(dx, dz) - b.yaw);
       this.cmdYaw = b.yaw;
       this.planCrawlTurn(yawErr);

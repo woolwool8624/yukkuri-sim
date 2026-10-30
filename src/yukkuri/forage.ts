@@ -8,6 +8,7 @@ import { BraidPick, braidSide, smooth } from './braidPick';
 import { HatStash } from './hatStash';
 import { loadJSON, saveJSON } from '../platform/storage';
 import { findFood, type FoodKind } from './foods';
+import { HOLLOW_DARKEN } from './nestStuff';
 import type { Yukkuri } from './Yukkuri';
 
 /**
@@ -46,6 +47,8 @@ interface Item {
   base: number;
   /** 巣作りでおうちの横に並べた餌（拾う・帽子に入れる対象から外す） */
   nest: boolean;
+  /** うろの中で暗がりに沈めている（材質を沈めた写しに差し替えている） */
+  dark: boolean;
 }
 
 /** 巣作りが運ぶ地面の餌の持ち手 */
@@ -136,6 +139,8 @@ export class Forage {
   private readonly carryStop = new THREE.Vector3();
   private word: Word | null = null;
   private readonly mats: Record<string, THREE.Material> = {};
+  /** 材質の、うろの中で沈めた写し（使うときに作る） */
+  private readonly darkMats = new Map<THREE.Material, THREE.Material>();
   private readonly outline: THREE.Material;
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly _p = new THREE.Vector3();
@@ -226,7 +231,7 @@ export class Forage {
     this.object.add(object);
     const item: Item = {
       kind, object, state: 'ground', slot: -1, yaw: Math.random() * Math.PI * 2, t: 0,
-      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0, nest: false,
+      from: new THREE.Vector3(), vel: new THREE.Vector3(), spin: new THREE.Vector3(), stash: false, base: 0, nest: false, dark: false,
     };
     this.items.push(item);
     this.placeOnGround(item, p.x, p.z, base);
@@ -375,6 +380,18 @@ export class Forage {
     this.items.length = 0;
   }
 
+  /**
+   * マップを変えたとき：地面の餌（巣に並べた餌も）を片付ける。帽子のつば・中の餌はそのまま
+   * （前のマップの場所に残り、森の巣の餌が飼育ケースの外に出て、次の巣作りで届かずにあきらめていた）
+   */
+  mapChanged(): void {
+    this.picker.cancel();
+    for (const it of this.items.filter((i) => i.state === 'ground' || i.state === 'falling')) {
+      this.object.remove(it.object);
+      this.items.splice(this.items.indexOf(it), 1);
+    }
+  }
+
   /** 固定時間刻みで呼ぶ */
   update(dt: number): void {
     const y = this.y;
@@ -398,6 +415,7 @@ export class Forage {
       if (!y.outfit.hat || y.locomotion.isLying || y.locomotion.tilted || tilt > SPILL_TILT) this.spill();
     }
     for (const it of this.items) {
+      this.shade(it);
       it.t += dt;
       if (it.state === 'toss' && it.t >= TOSS_TIME) {
         it.state = 'hat';
@@ -416,6 +434,38 @@ export class Forage {
         if (it.object.position.y <= this.groundY(it) && it.vel.y < 0) this.placeOnGround(it, it.object.position.x, it.object.position.z);
       }
     }
+  }
+
+  /**
+   * 森の大木のうろの中の餌は暗がりに沈める（巣作りでうろの中へ運んだ餌が、暗い床で明るく浮いた）。地面の餌は置いた所、
+   * 運んでいる餌は運んでいるゆっくりが中にいるかで決め、材質を沈めた写しと差し替える
+   */
+  private shade(it: Item): void {
+    const st = this.y.stage;
+    const p = it.object.position, c = this.y.center;
+    const dark = it.state === 'ground' ? !!st?.inHollow(p.x, p.z) : it.state === 'held' && !!st?.inCave(c.x, c.z);
+    if (dark === it.dark) return;
+    it.dark = dark;
+    it.object.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      if (dark) {
+        const light = o.material as THREE.Material;
+        if (!Object.values(this.mats).includes(light)) return;
+        let m = this.darkMats.get(light);
+        if (!m) {
+          // 写しは光の向きなど体と共有する値もそのまま共有する（clone は値を複製してしまう）。沈める量だけ自分のもの
+          const lu = (light as THREE.ShaderMaterial).uniforms;
+          m = (light as THREE.ShaderMaterial).clone();
+          const u = (m as THREE.ShaderMaterial).uniforms;
+          for (const k of Object.keys(lu)) if (k !== 'uDarken') u[k] = lu[k];
+          u.uDarken.value = HOLLOW_DARKEN;
+          this.darkMats.set(light, m);
+        }
+        o.material = m;
+      } else {
+        for (const [light, m] of this.darkMats) if (o.material === m) o.material = light;
+      }
+    });
   }
 
   /** 描画の直前に呼ぶ（帽子と三つ編みの位置が決まった後）：拾っている餌は毛先に、つばの上の餌は置き場に付ける */

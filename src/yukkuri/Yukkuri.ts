@@ -340,11 +340,14 @@ export class Yukkuri {
       const p = { x: c.x, z: c.z };
       if (stage.limit(p, this.stageMargin)) this.drop(0.3, p.x, p.z);
       if (this.box.shown && !this.box.fits()) this.box.clear();
-      // 巣作りはやめ、巣材は片付けて、飼育ケースなら少し散らばらせる
+      // おうちはマップごと。巣作りはやめ、巣材と地面の餌は片付けて、飼育ケース・森なら巣材を少し散らばらせる
+      this.home.useMap(stage.map);
       this.nestBuild.cancel();
       this.nestStuff.mapChanged(stage.map);
+      this.forage.mapChanged();
     };
     this.locomotion.limit = (t) => stage.limit(t, this.stageMargin);
+    this.locomotion.route = (from, to) => stage.via(from.x, from.z, to.x, to.z, this.shape.radius);
     stage.onChange = sync;
     sync();
   }
@@ -517,6 +520,7 @@ export class Yukkuri {
     this.toilet.update(dt); // といれへの行き先・身ぶりも移動の処理より先に指示する
     this.cleanup.update(dt);
     this.nestBuild.update(dt); // 行き先を移動の処理より先に指示する
+    this.nestStuff.update(dt); // うろの中の巣材を暗がりに沈める
     this.grill.update(dt); // 焼いている間の身ぶりも移動の処理より先に指示する
     this.greet.update(dt); // 宣言を言い終えたら動作を始める（動作の処理は次のステップから）
     this.otabe.update(dt); // 帽子を脱いでから割れる（割れるまでは移動を止めておく）

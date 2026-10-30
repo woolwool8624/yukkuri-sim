@@ -1,10 +1,14 @@
 import { loadJSON, saveJSON } from '../platform/storage';
+import type { MapId } from '../world/Stage';
 
 /**
  * おうち（ゆっくりぷれいす）：おうちせんげんをした場所（地面の上の位置）を覚える。画面には何も出さない。
- * 巣作りなど、あとで作る動きの起点にする。せんげんし直すと、その場所に置き換わる。保存して、読み直しても残す
+ * 巣作りなど、あとで作る動きの起点にする。せんげんし直すと、その場所に置き換わる。保存して、読み直しても残す。
+ * マップごとに覚える（指示。2026-10-30。1 か所だと、飼育ケースのおうちが森の広場の真ん中などになった）
  */
-const STORAGE_KEY = 'home';
+const STORAGE_KEY = 'homes';
+/** マップごとにする前の保存先（1 か所だけ）。飼育ケースのおうちとして引き継ぐ（指示） */
+const OLD_KEY = 'home';
 
 export interface HomeSpot {
   /** 地面の上の位置（ワールドの x, z） */
@@ -14,28 +18,50 @@ export interface HomeSpot {
   yaw: number;
 }
 
+type Spots = Partial<Record<MapId, HomeSpot>>;
+
 export class Home {
-  private spot: HomeSpot | null;
+  private readonly spots: Spots;
+  /** 今いるマップ（Yukkuri がマップを渡されたときに知らせる） */
+  private map: MapId = 'open';
 
   constructor() {
-    const saved = loadJSON<HomeSpot>(STORAGE_KEY);
-    this.spot = saved && Number.isFinite(saved.x) && Number.isFinite(saved.z) ? { x: saved.x, z: saved.z, yaw: saved.yaw ?? 0 } : null;
+    const saved = loadJSON<Spots>(STORAGE_KEY);
+    this.spots = {};
+    if (saved) {
+      for (const [k, v] of Object.entries(saved)) {
+        const s = valid(v);
+        if (s) this.spots[k as MapId] = s;
+      }
+    } else {
+      const old = valid(loadJSON<HomeSpot>(OLD_KEY));
+      if (old) this.spots.cage = old;
+    }
   }
 
-  /** おうち（決めていなければ null） */
+  /** 今いるマップを知らせる（おうちはマップごと） */
+  useMap(map: MapId): void {
+    this.map = map;
+  }
+
+  /** 今いるマップのおうち（決めていなければ null） */
   get current(): Readonly<HomeSpot> | null {
-    return this.spot;
+    return this.spots[this.map] ?? null;
   }
 
-  /** おうちをこの場所に決める */
+  /** 今いるマップのおうちをこの場所に決める */
   set(x: number, z: number, yaw: number): void {
-    this.spot = { x, z, yaw };
-    saveJSON(STORAGE_KEY, this.spot);
+    this.spots[this.map] = { x, z, yaw };
+    saveJSON(STORAGE_KEY, this.spots);
   }
 
-  /** おうちを忘れる */
+  /** 今いるマップのおうちを忘れる */
   clear(): void {
-    this.spot = null;
-    saveJSON(STORAGE_KEY, null);
+    delete this.spots[this.map];
+    saveJSON(STORAGE_KEY, this.spots);
   }
+}
+
+function valid(v: HomeSpot | null | undefined): HomeSpot | null {
+  return v && Number.isFinite(v.x) && Number.isFinite(v.z) ? { x: v.x, z: v.z, yaw: v.yaw ?? 0 } : null;
 }

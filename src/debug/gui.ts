@@ -11,7 +11,7 @@ import { CHARACTERS } from '../character';
 import { MORU_WAG_MAX } from '../yukkuri/moru';
 import { voicesOf } from '../yukkuri/lines';
 import { STASH_MAX } from '../yukkuri/forage';
-import { CATEGORY_NAMES, NEST_KINDS, type NestPick } from '../yukkuri/nestStuff';
+import { CATEGORY_NAMES, type NestPick } from '../yukkuri/nestStuff';
 import { FLOORS, MAPS } from '../world/Stage';
 import { allPresets, findPreset, isOverridden, resetPreset, saveLastPresetId, savePreset, USER_PRESET_ID } from '../yukkuri/presets';
 
@@ -323,11 +323,25 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   forage.add(forageView, 'count').name('帽子の餌').disable().listen();
   setInterval(() => (forageView.count = `つば ${y.forage.onHat} / 8・中 ${y.forage.inHat} / ${STASH_MAX}（地面 ${y.forage.onGround}）`), 200);
 
-  // 巣材：寝床を作るために集める物（たからもの・べっど。食糧は餌集めの餌）。飼育ケースを開くと少し散らばっている
+  // 巣材：寝床を作るために集める物（たからもの・べっど。食糧は餌集めの餌）。飼育ケース・森を開くと少し散らばっている。
+  // 出すものはマップの組（飼育ケース・平地／森）の種類だけ。マップを変えたら選びなおす欄を作り直す（同じ場所に）
   const nest = tools.addFolder('巣材');
-  const nestKinds: Record<string, NestPick> = { 'たからもの（ランダム）': 'treasure', 'べっど（ランダム）': 'bedding' };
-  for (const k of NEST_KINDS) nestKinds[`${k.name}（${CATEGORY_NAMES[k.category]}）`] = k.id;
-  noLock(nest.add(y.nestStuff, 'kindId', nestKinds).name('出すもの'));
+  const nestKinds = () => {
+    const o: Record<string, NestPick> = { 'たからもの（ランダム）': 'treasure', 'べっど（ランダム）': 'bedding' };
+    for (const k of y.nestStuff.kinds) o[`${k.name}（${CATEGORY_NAMES[k.category]}）`] = k.id;
+    return o;
+  };
+  let nestKindCtl = nest.add(y.nestStuff, 'kindId', nestKinds()).name('出すもの');
+  noLock(nestKindCtl);
+  let nestMap = y.stage?.map;
+  setInterval(() => {
+    if (y.stage?.map === nestMap) return;
+    nestMap = y.stage?.map;
+    const next = nestKindCtl.domElement.nextSibling;
+    nestKindCtl = nestKindCtl.options(nestKinds()).name('出すもの');
+    noLock(nestKindCtl);
+    nest.$children.insertBefore(nestKindCtl.domElement, next);
+  }, 200);
   nest.add({ f: () => y.nestStuff.spawn() }, 'f').name('出す');
   nest.add({ f: () => { y.nestBuild.cancel(); y.nestStuff.clear(); } }, 'f').name('片付ける');
   // 巣作り：おうち（おうちせんげんした所）にべっどを重ねて寝床にし、たからもの（右横）・食料（左横）を固まりで並べる。仕上がるまでまとめて運ぶ

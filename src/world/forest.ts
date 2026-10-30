@@ -36,6 +36,10 @@ const HOLLOW = { height: 7.5, topRatio: 0.72, flare: 0.14, ridges: 13, ridgeDept
 const ARCH_SINK = 0.2;
 /** 体の真ん中が、洞穴の内側の楕円のこの比より内なら「洞穴の中」（屋根の下に体が入りきった所） */
 const CAVE_INSIDE = 0.62;
+/** うろの床の上とみなす所（巣材を暗がりに沈める）：内側の円のこの比より内 */
+const HOLLOW_FLOOR = 0.92;
+/** 苔の生える所を、物の体が乗れない所（props の円）からこれだけ外に置く（m。根元に寄り添うよう、苔の半径より少し内） */
+const MOSS_OFF = 0.22;
 /** 草むら・茂み・キノコを置かない所：洞穴の外の楕円のこの倍より内 */
 const CAVE_CLEAR = 1.2;
 
@@ -48,16 +52,7 @@ const LEAVES: ToonColors = { lit: '#93c76c', shade: '#77ab57', deep: '#5b8b45', 
 const LEAVES_DARK: ToonColors = { lit: '#7fb35f', shade: '#64974b', deep: '#4b7838', rim: '#dcefc7' };
 const BUSH: ToonColors = { lit: '#86bd63', shade: '#6aa04f', deep: '#51803d', rim: '#e2f3cd' };
 const GRASS: ToonColors = { lit: '#a3d173', shade: '#86b85c', deep: '#6a9847', rim: '#eef9dc' };
-/** うろの中の巣：落ち葉（赤茶・黄土・くすんだ緑）と小枝の色 */
-const NEST_LEAVES: ToonColors[] = [
-  { lit: '#c9773f', shade: '#a95f2f', deep: '#874822', rim: '#f6d3b4' },
-  { lit: '#d6a552', shade: '#b8883e', deep: '#946a2c', rim: '#f8e4bd' },
-  { lit: '#a3a35a', shade: '#868744', deep: '#696b33', rim: '#e7e8c4' },
-];
-const TWIG: ToonColors = { lit: '#9a7048', shade: '#7e5a37', deep: '#614428', rim: '#e3cfb2' };
-/** うろの中の物を暗がりに合わせて沈める量（DARKEN_GLSL の uDarken） */
-const NEST_DARKEN = 0.45;
-const NEST_STONE_DARKEN = 0.7;
+const MOSS: ToonColors = { lit: '#78a84a', shade: '#5f8c3a', deep: '#466b2a', rim: '#e3f2cc' };
 const ROCK: ToonColors = { lit: '#bdb8ae', shade: '#9f9a90', deep: '#7f7a71', rim: '#f3f0ea' };
 /** うろの入口の縁（幹の切り口の明るい木の色） */
 const HOLLOW_RIM: ToonColors = { lit: '#c49a6c', shade: '#a87f55', deep: '#86613f', rim: '#f3dfc4' };
@@ -88,6 +83,13 @@ export class Forest {
   readonly toilet = { x: TOILET.x, z: TOILET.z, w: TOILET.w, d: TOILET.d };
   /** 置いてある物（体が乗れない所）：木・切り株・岩・倒木の中心と半径。行き先もこの外へ寄せる */
   readonly props: { x: number; z: number; r: number }[] = [];
+  /** 草むら・茂み（当たらないが、中に置いた物が隠れる）：中心と半径（m） */
+  readonly covers: { x: number; z: number; r: number }[] = [];
+  /**
+   * 苔の生える所（倒木の脇・切り株・岩・広場の木の根元の地面。巣材の苔はここに生えていて、ゆっくりがはがして運ぶ）：
+   * 物のすぐ脇の点と、物のふちに沿う向き（単位ベクトル）
+   */
+  readonly mossSites: { x: number; z: number; tx: number; tz: number }[] = [];
   /** 空と遠くの色（霧） */
   readonly sky = '#e3ead9';
   private readonly trees: Tree[] = [];
@@ -267,6 +269,45 @@ export class Forest {
       this.props.push({ x, z, r: s });
     }
 
+    // 苔の生える所：切り株・岩・広場の木の根元（広場の真ん中の側から少しずらした所）と、倒木の広場側の脇。
+    // 物の脇（体が乗れない所 props の円のすぐ外）に置く。苔は根元に少しかかって寄り添う（巣材の grow）
+    // 生える所の物には、はがせない苔を根元・側面に少し這わせる（苔がそこに生えていると分かるように）
+    {
+      const off = MOSS_OFF;
+      const mossMat = mat(MOSS);
+      const creep = (x: number, y: number, z: number, yaw: number, w: number, h: number, d: number) => {
+        const geo = lumpy(new THREE.IcosahedronGeometry(1, 2), 0.18, x * 5 + z * 3).scale(w, h, d).rotateY(yaw);
+        const m = add(geo, mossMat);
+        m.position.set(x, y, z);
+        this.object.add(m);
+      };
+      const round = (cx: number, cz: number, r: number, rv: number) => {
+        const a = Math.atan2(-cx, -cz) + 0.5;
+        this.mossSites.push({ x: cx + Math.sin(a) * (r + off), z: cz + Math.cos(a) * (r + off), tx: Math.cos(a), tz: -Math.sin(a) });
+        // 根元を這う苔（物の表面に半分埋めた平たいかたまり 2 つ）
+        for (const da of [-0.35, 0.3]) {
+          const b = a + da;
+          creep(cx + Math.sin(b) * rv * 0.95, 0.04, cz + Math.cos(b) * rv * 0.95, b, rv * 0.55, 0.13, 0.13);
+        }
+      };
+      // 切り株・岩・木の、体が乗れない所の半径（props と同じ）と、見た目の半径
+      for (const [x, z, r, rv] of [
+        [3.6, 1.7, 0.48 * 1.15, 0.5], [-1.4, -3.6, 0.36 * 1.15, 0.38], [6.4, 2.3, 0.75, 0.66], [0.9, -4.7, 0.55, 0.48],
+        [-7.0, -0.7, 0.5, 0.44], [-3.4, 1.9, 0.34 * 1.25, 0.4],
+      ]) {
+        round(x, z, r, rv);
+      }
+      const L = { x: -5.6, z: 2.7, len: 3.4, r: 0.32 * 1.4, yaw: 0.45 };
+      const dx = Math.cos(L.yaw), dz = -Math.sin(L.yaw), nx = Math.sin(L.yaw), nz = Math.cos(L.yaw);
+      const side = nx * -L.x + nz * -L.z > 0 ? 1 : -1;
+      for (const t of [-0.2, 0.2]) {
+        this.mossSites.push({ x: L.x + dx * L.len * t + nx * side * (L.r + off), z: L.z + dz * L.len * t + nz * side * (L.r + off), tx: dx, tz: dz });
+        // 倒木の脇腹を這う苔
+        const yaw = Math.atan2(nx * side, nz * side);
+        creep(L.x + dx * L.len * t + nx * side * 0.26, 0.2, L.z + dz * L.len * t + nz * side * 0.26, yaw, 0.42, 0.16, 0.12);
+      }
+    }
+
     // 茂み（当たらない。中に入れる）
     for (const [x, z, s] of [[-7.2, 4.6, 0.55], [7.3, -1.2, 0.6], [1.8, 5.4, 0.5], [-2.2, -5.4, 0.55], [7.2, 5.3, 0.45], [-7.4, -3.2, 0.5]]) {
       if (this.nearCave(x, z)) continue;
@@ -281,6 +322,7 @@ export class Forest {
       }
       g.position.set(x, 0, z);
       this.object.add(g);
+      this.covers.push({ x, z, r: s * 1.6 });
     }
 
     // 草むら（当たらない）：細い葉の束
@@ -295,6 +337,7 @@ export class Forest {
       const m = new THREE.Mesh(geo, grassMat);
       m.position.set(x, 0, z);
       this.object.add(m);
+      this.covers.push({ x, z, r: 0.45 * s });
     }
 
     // キノコ：といれの木の根元・倒木・切り株の脇
@@ -396,11 +439,83 @@ export class Forest {
 
   /**
    * 点（x, z）が洞穴の岩の殻（外の楕円の CAVE_CLEAR 倍）にかかるか。草むら・茂み・キノコはそこに置かない
-   * （洞穴の中に草むらがあると、暗い洞穴の中で草だけ明るく浮いて見えた）
+   * （洞穴の中に草むらがあると、暗い洞穴の中で草だけ明るく浮いて見えた）。巣材も散らばらせない
    */
-  private nearCave(x: number, z: number): boolean {
+  nearCave(x: number, z: number): boolean {
     const [lx, lz] = this.toCave(x, z);
     return (lx / CAVE.rx) ** 2 + (lz / CAVE.rz) ** 2 < CAVE_CLEAR ** 2;
+  }
+
+  /** 点（x, z）がうろの床の上か（内側の円の HOLLOW_FLOOR 倍より内） */
+  inHollow(x: number, z: number): boolean {
+    const [lx, lz] = this.toCave(x, z);
+    return Math.hypot(lx, lz) < (CAVE.rx - CAVE.wall) * HOLLOW_FLOOR;
+  }
+
+  /**
+   * 歩く道（Locomotion.route）：（fx, fz）から（tx, tz）へまっすぐ行くと幹（壁の当たり）を通るなら、その手前で向かう点。
+   * うろの中と外を行き来するときは入口の前と入口の内を通り、外どうしで幹が間にあれば幹のまわりを回る。毎回、今いる所から決める
+   * （道を探す仕組みはなく、まっすぐ幹へ向かうと当たって止まり、運ぶ・拾うのをあきらめていた）
+   */
+  via(fx: number, fz: number, tx: number, tz: number, R: number): { x: number; z: number } | null {
+    const ri = CAVE.rx - CAVE.wall, ro = CAVE.rx + CAVE.wall;
+    const [cx, cz] = this.toCave(fx, fz);
+    const [gx, gz] = this.toCave(tx, tz);
+    const door = CAVE.door - R * 0.8;
+    // 体が幹にかかる所（入口の通り道は除く）
+    const hits = (x: number, z: number) => {
+      const d = Math.hypot(x, z);
+      return d > ri - R * 0.7 && d < ro + R * 0.6 && !(z > 0 && Math.abs(x) < door);
+    };
+    // 行き先の手前 R は見ない（幹のすぐそばの行き先は、幹に当たって止まる所が着く所。見ると着かずに回り続けた）
+    const blocked = (ax: number, az: number, bx: number, bz: number) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const n = Math.ceil(len / 0.15);
+      for (let i = 1; i <= n; i++) {
+        if (len * (1 - i / n) < R) break;
+        if (hits(ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n)) return true;
+      }
+      return false;
+    };
+    if (!blocked(cx, cz, gx, gz)) return null;
+    const inside = (x: number, z: number) => Math.hypot(x, z) < ri - 0.1;
+    const outer: [number, number] = [0, ro + R + 0.6], inner: [number, number] = [0, ri - R - 0.4];
+    // 幹のまわりを、目当ての向き（ローカルの角度）の側へ回る
+    const orbit = (goal: number): [number, number] => {
+      const a = Math.atan2(cx, cz);
+      const diff = Math.atan2(Math.sin(goal - a), Math.cos(goal - a));
+      const b = a + Math.sign(diff) * Math.min(Math.abs(diff), 0.8);
+      const r = Math.max(Math.hypot(cx, cz), ro + R + 0.5);
+      return [Math.sin(b) * r, Math.cos(b) * r];
+    };
+    let p: [number, number];
+    if (inside(cx, cz)) {
+      // 出る：入口の通り道に入っていれば外の入口の前へ、まだなら内の入口へ
+      p = Math.abs(cx) < door - 0.15 && cz > 0.3 ? outer : inner;
+    } else if (inside(gx, gz)) {
+      // 入る：入口の前なら内の入口へ、入口の前へまっすぐ行けるならそこへ、だめなら入口の側へ回る
+      p = !blocked(cx, cz, ...inner) ? inner : !blocked(cx, cz, ...outer) ? outer : orbit(0);
+    } else {
+      p = orbit(Math.atan2(gx, gz));
+    }
+    const c = Math.cos(this.caveYaw), s = Math.sin(this.caveYaw);
+    return { x: CAVE.x + p[0] * c + p[1] * s, z: CAVE.z - p[0] * s + p[1] * c };
+  }
+
+  /**
+   * 点 p が大木のうろの幹（壁）にかかる所なら、近い側（うろの中・外）へ keep m 離して寄せる（入口の通り道は除く）。寄せたら true。
+   * 幹の裏の行き先が幹の中になり、着かずに周りを回り続けた
+   */
+  pushOutOfHollow(p: { x: number; z: number }, keep: number): boolean {
+    const ri = CAVE.rx - CAVE.wall, ro = CAVE.rx + CAVE.wall;
+    const [lx, lz] = this.toCave(p.x, p.z);
+    const d = Math.hypot(lx, lz);
+    if (d <= ri - keep || d >= ro + keep || (lz > 0 && Math.abs(lx) < CAVE.door - keep * 0.8) || d < 1e-6) return false;
+    const k = (d < (ri + ro) / 2 ? ri - keep : ro + keep) / d;
+    const c = Math.cos(this.caveYaw), s = Math.sin(this.caveYaw);
+    p.x = CAVE.x + lx * k * c + lz * k * s;
+    p.z = CAVE.z - lx * k * s + lz * k * c;
+    return true;
   }
 
   /** ワールドの点を洞穴のローカル（入口が +z）へ */
@@ -408,106 +523,6 @@ export class Forest {
     const dx = x - CAVE.x, dz = z - CAVE.z;
     const c = Math.cos(this.caveYaw), s = Math.sin(this.caveYaw);
     return [dx * c - dz * s, dx * s + dz * c];
-  }
-
-  /**
-   * うろの中の巣（洞穴のローカル。入口が +z）：奥に落ち葉を積んだ寝床、そのふちと床に小枝、床に小石と落ち葉。
-   * 当たらない（寝床にも乗れる）。暗いうろの中で明るく浮かないよう、色を沈める（uDarken）
-   */
-  private buildNest(body: THREE.ShaderMaterial, outline: THREE.ShaderMaterial): THREE.Group {
-    const g = new THREE.Group();
-    const R = CAVE.rx - CAVE.wall - 0.25; // 床の使える半径（壁から少し離す）
-    const mat = (c: ToonColors, doubleSide = false, darken = NEST_DARKEN) => {
-      const m = createAccessoryMaterial(body, c, { rim: 0.15, ground: -10, doubleSide });
-      m.uniforms.uDarken.value = darken;
-      this.disposables.push(m);
-      return m;
-    };
-    const merged = (geos: THREE.BufferGeometry[]) => {
-      const geo = mergeGeometries(geos);
-      for (const x of geos) x.dispose();
-      this.disposables.push(geo);
-      return geo;
-    };
-    const leaf = () => {
-      const len = 0.09 + this.rand() * 0.07, w = len * (0.4 + this.rand() * 0.15);
-      const sh = new THREE.Shape();
-      sh.moveTo(-len, 0);
-      sh.quadraticCurveTo(0, -w, len, 0);
-      sh.quadraticCurveTo(0, w, -len, 0);
-      return new THREE.ShapeGeometry(sh, 4).rotateX(-Math.PI / 2);
-    };
-    // 寝床：奥の落ち葉の山（下に土台のふくらみ、上に葉を重ねる）
-    const BED = { x: 0.15, z: -0.95, rx: 0.85, rz: 0.62, h: 0.16 };
-    const base = new THREE.SphereGeometry(1, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2).scale(BED.rx, BED.h, BED.rz).translate(BED.x, 0, BED.z);
-    g.add(withOutline(merged([base]), mat(NEST_LEAVES[0]), outline));
-    const bedLeaves: THREE.BufferGeometry[][] = NEST_LEAVES.map(() => []);
-    for (let i = 0; i < 160; i++) {
-      const a = this.rand() * Math.PI * 2, d = Math.sqrt(this.rand()) * 1.05;
-      const x = Math.cos(a) * d, z = Math.sin(a) * d;
-      const y = BED.h * Math.sqrt(Math.max(0, 1 - Math.min(1, d) ** 2)) + 0.004 + this.rand() * 0.02;
-      const geo = leaf().rotateZ((this.rand() - 0.5) * 0.5).rotateX((this.rand() - 0.5) * 0.5).rotateY(this.rand() * Math.PI * 2);
-      geo.translate(BED.x + x * BED.rx, y, BED.z + z * BED.rz);
-      bedLeaves[i % NEST_LEAVES.length].push(geo);
-    }
-    // 床に散らばる落ち葉（寝床の外）
-    for (let i = 0; i < 45; i++) {
-      const a = this.rand() * Math.PI * 2, d = Math.sqrt(this.rand()) * R;
-      const x = Math.sin(a) * d, z = Math.cos(a) * d;
-      if (((x - BED.x) / BED.rx) ** 2 + ((z - BED.z) / BED.rz) ** 2 < 1.1) continue;
-      const geo = leaf().rotateY(this.rand() * Math.PI * 2).translate(x, 0.004 + i * 0.0002, z);
-      bedLeaves[i % NEST_LEAVES.length].push(geo);
-    }
-    bedLeaves.forEach((geos, i) => g.add(new THREE.Mesh(merged(geos), mat(NEST_LEAVES[i], true))));
-    // 小枝：寝床のふちをぐるりと囲むように数本、床にも数本（少し曲がった細い棒）
-    const twigs: THREE.BufferGeometry[] = [];
-    const twig = (x: number, z: number, yaw: number, len: number, r: number, lift: number) => {
-      const bend = (this.rand() - 0.5) * 0.25;
-      const geo = tubeAlong((t) => new THREE.Vector3((t - 0.5) * len, r + lift * Math.sin(t * Math.PI), bend * Math.sin(t * Math.PI)),
-        (t) => r * (1 - t * 0.35), 8, 6);
-      twigs.push(geo.rotateY(yaw).translate(x, 0, z));
-    };
-    for (let i = 0; i < 9; i++) {
-      const a = (i / 9) * Math.PI * 2 + this.rand() * 0.4;
-      const x = BED.x + Math.cos(a) * BED.rx * 1.02, z = BED.z + Math.sin(a) * BED.rz * 1.02;
-      twig(x, z, -a + Math.PI / 2 + (this.rand() - 0.5) * 0.5, 0.45 + this.rand() * 0.3, 0.022, 0.04);
-    }
-    for (let i = 0; i < 7; i++) {
-      const a = this.rand() * Math.PI * 2, d = 0.6 + this.rand() * (R - 0.6);
-      const x = Math.sin(a) * d, z = Math.cos(a) * d;
-      if (((x - BED.x) / BED.rx) ** 2 + ((z - BED.z) / BED.rz) ** 2 < 1.3) continue;
-      twig(x, z, this.rand() * Math.PI, 0.35 + this.rand() * 0.45, 0.016 + this.rand() * 0.01, 0);
-    }
-    g.add(withOutline(merged(twigs), mat(TWIG), outline));
-    // 小石：床のあちこち。入口から寝床までの通り道（幅 PATH_HALF の両側）にかかるものは、道の脇へよけてある
-    // （指示：踏むと痛いからどけてあるはず）
-    const stones: THREE.BufferGeometry[] = [];
-    const p0 = new THREE.Vector2(0, CAVE.rz), p1 = new THREE.Vector2(BED.x, BED.z + BED.rz * 0.8);
-    const along = p1.clone().sub(p0);
-    const pathLen = along.length();
-    along.normalize();
-    const PATH_HALF = 0.55;
-    for (let i = 0; i < 16; i++) {
-      const a = this.rand() * Math.PI * 2, d = 0.4 + this.rand() * (R - 0.4);
-      let x = Math.sin(a) * d, z = Math.cos(a) * d;
-      if (((x - BED.x) / BED.rx) ** 2 + ((z - BED.z) / BED.rz) ** 2 < 1.05) continue;
-      const q = new THREE.Vector2(x, z).sub(p0);
-      const k = q.dot(along);
-      const side = q.x * along.y - q.y * along.x; // 道の右（+）・左（-）
-      if (k > -0.2 && k < pathLen + 0.2 && Math.abs(side) < PATH_HALF) {
-        const off = (PATH_HALF + 0.05 + this.rand() * 0.25) * (side >= 0 ? 1 : -1);
-        x = p0.x + along.x * k + along.y * off;
-        z = p0.y + along.y * k - along.x * off;
-        if (x * x + z * z > R * R) continue;
-      }
-      const r = 0.035 + this.rand() * 0.06;
-      const geo = lumpy(new THREE.IcosahedronGeometry(1, 1), 0.12, i * 1.3);
-      geo.scale(r, r * (0.55 + this.rand() * 0.25), r * (0.8 + this.rand() * 0.3)).rotateY(this.rand() * Math.PI).translate(x, r * 0.3, z);
-      stones.push(geo);
-    }
-    // 小石は明るい灰色なので、ほかより深く沈める（暗い床の上で白く浮いた）
-    g.add(withOutline(merged(stones), mat(ROCK, false, NEST_STONE_DARKEN), outline));
-    return g;
   }
 
   /**
@@ -554,8 +569,6 @@ export class Forest {
     g.add(new THREE.Mesh(reveal, revealMat));
     this.disposables.push(arch);
     g.add(withOutline(arch, rimMat, outline));
-    // 巣（指示：ゆっくりの巣らしい雑然とした床。枝・小石・葉っぱの寝床）
-    g.add(this.buildNest(body, outline));
     // 根：入口を避けて、幹の根元から放射状に地面へ這う
     for (let i = 0; i < 7; i++) {
       const a = Math.PI * 0.35 + (i / 7) * Math.PI * 1.3 + Math.sin(i * 2.3) * 0.12; // 入口（+z）の側 ±0.35π は空ける

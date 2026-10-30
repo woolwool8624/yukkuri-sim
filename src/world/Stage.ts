@@ -114,6 +114,47 @@ export class Stage {
     return this.forest?.inCave(x, z) ?? false;
   }
 
+  /** 点（x, z）が大木のうろの床の上か（森のとき。巣材を暗がりに沈める・うろの中と外を分ける） */
+  inHollow(x: number, z: number): boolean {
+    return this.forest?.inHollow(x, z) ?? false;
+  }
+
+  /**
+   * （fx, fz）から（tx, tz）へ歩くとき、間に大木のうろの幹があれば、入口を通って回る道の途中の点（なければ null）。
+   * R は体の半径
+   */
+  via(fx: number, fz: number, tx: number, tz: number, R: number): { x: number; z: number } | null {
+    return this.forest?.via(fx, fz, tx, tz, R) ?? null;
+  }
+
+  /** 点（x, z）が洞穴（大木のうろ）の幹の近くか（森のとき。中も含む） */
+  nearCave(x: number, z: number): boolean {
+    return this.forest?.nearCave(x, z) ?? false;
+  }
+
+  /** 苔の生える所（森のとき）：物のすぐ脇の点と、物のふちに沿う向き */
+  get mossSites(): readonly { x: number; z: number; tx: number; tz: number }[] {
+    return this.forest?.mossSites ?? [];
+  }
+
+  /** 中心（x, z）・半径 r の円が、草むら・茂み（当たらないが、中の物が隠れる）にかかるか（森のとき） */
+  inCover(x: number, z: number, r: number): boolean {
+    return !!this.forest?.covers.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + r);
+  }
+
+  /** 中心（x, z）・半径 r の円が、当たる物（壁・うろの幹・木・岩・皿など。colliders の箱）にかかるか */
+  blocked(x: number, z: number, r: number): boolean {
+    for (const b of this.colliders) {
+      const cs = Math.cos(b.yaw), sn = Math.sin(b.yaw);
+      const dx = x - b.x, dz = z - b.z;
+      // 箱のローカル（SoftBody の solveBoxes と同じ向き）で、箱の一番近い所までの距離
+      const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+      const ex = Math.max(0, Math.abs(lx) - b.hx), ez = Math.max(0, Math.abs(lz) - b.hz);
+      if (Math.hypot(ex, ez) < r) return true;
+    }
+    return false;
+  }
+
   /** 空と遠くの色（霧） */
   get sky(): string {
     return this.forest?.sky ?? OPEN_SKY;
@@ -140,6 +181,13 @@ export class Stage {
         p.x = o.x + (d > 1e-6 ? dx * k : r);
         p.z = o.z + dz * k;
         moved = true;
+      }
+      // 大木のうろの幹（壁）の上なら、近い側（うろの中か外）へ。寄せて範囲の外へ出たら範囲の内側へ戻す
+      // （幹の裏の角は、幹と範囲の縁の間が体より狭く、行けない）
+      if (this.forest.pushOutOfHollow(p, keep)) {
+        moved = true;
+        p.x = THREE.MathUtils.clamp(p.x, a.minX + margin, a.maxX - margin);
+        p.z = THREE.MathUtils.clamp(p.z, a.minZ + marginZ, a.maxZ - marginZ);
       }
     }
     return moved;

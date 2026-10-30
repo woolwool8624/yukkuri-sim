@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { createAccessoryMaterial } from '../render/accessoryMaterial';
 import { createAccessoryOutlineMaterial } from '../render/outlineMaterial';
-import { withOutline } from '../character/shapes';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { tubeAlong, withOutline } from '../character/shapes';
 import { createBlobShadow } from '../render/blobShadow';
 import type { ToonColors } from '../render/toonMaterial';
 import type { MapId } from '../world/Stage';
@@ -11,38 +12,57 @@ import type { Yukkuri } from './Yukkuri';
 /**
  * 巣材：おうち（おうちせんげんした所）に寝床を作るために集める物（指示）。種類は 食糧・たからもの・べっど の 3 つ。
  *   食糧 … 餌集めの餌（forage.ts）をそのまま使う
- *   たからもの … アイスの当たり棒・ビー玉・きれいな小石・ボタン
- *   べっど … ちぎった新聞紙・ティッシュ・布の切れ端・牧草
- * ここは、たからものとべっどの物（形と、地面に置く・片付ける・運ぶ間の形）。出し方（指示）は、飼育ケースを開いたときに少し散らばっていて、
- * ボタンで 1 個ずつゆっくりの前に出すこともできる。運んで寝床を整えるのは巣作り（nestBuild.ts）。
+ *   たからもの … アイスの当たり棒・ビー玉・きれいな小石・ボタン（飼育ケース）／鳥の羽根・松ぼっくり・カタツムリの殻（森）
+ *   べっど … ちぎった新聞紙・ティッシュ・布の切れ端・牧草（飼育ケース）／落ち葉のひと束・大きな葉っぱ・苔のかたまり（森）
+ * マップごとに出る組が違う（NestSet。平地は飼育ケースの組を 1/4 の大きさで）。森の組は指示で選んだ（2026-10-30）。
+ * ここは、たからものとべっどの物（形と、地面に置く・片付ける・運ぶ間の形）。出し方（指示）は、飼育ケース・森を開いたときに少し散らばっていて、
+ * ボタンで 1 個ずつゆっくりの前に出すこともできる。森の苔だけは散らばらせず、倒木・岩などの脇に生えていて、はがすと跡に土が見える
+ * （指示：はがれた苔が地面にまばらに散らばっているのはおかしい）。運んで寝床を整えるのは巣作り（nestBuild.ts）。
  * 運ぶ間（指示：三つ編みは垂らしたまま、床を引きずって運ぶ）：べっどは端を毛先でつまみ、つまんだ所だけ浮いて、残りは後ろへ床を
  * 引きずる（DRAG）。たからものは硬いので、形を変えずに毛先に付ける
- * 大きさは実物どおり：飼育ケースの縮尺（ゆっくりは普通の 1/4 という体。実物 1 cm ＝ CM m。新聞紙の床と同じ）。
- * ほかのマップ（普通の大きさのゆっくり）ではその 1/4
+ * 大きさは実物どおり：飼育ケースの組は飼育ケースの縮尺（ゆっくりは普通の 1/4 という体。実物 1 cm ＝ CM m。新聞紙の床と同じ）で作り、
+ * 平地（普通の大きさのゆっくり）ではその 1/4 で置く。森の組は普通の大きさのゆっくりの縮尺（実物 1 cm ＝ F m）で作り、そのまま置く
+ * （森のべっどは実物で 20〜30 cm あるので、置いた大きさは飼育ケースのべっどと同じくらいになる）。
+ * 森の大木のうろの中に置いた物は、ゆっくりと同じく暗がりに沈める（update。暗いうろの中で明るく浮かないよう）
  */
 export type NestCategory = 'treasure' | 'bedding';
-export type NestKindId = 'stick' | 'marble' | 'pebble' | 'button' | 'paper' | 'tissue' | 'cloth' | 'hay';
+export type NestKindId =
+  | 'stick' | 'marble' | 'pebble' | 'button' | 'paper' | 'tissue' | 'cloth' | 'hay'
+  | 'feather' | 'pinecone' | 'snail' | 'leaves' | 'bigleaf' | 'moss';
+/** 出る組：飼育ケース（平地も）・森 */
+export type NestSet = 'cage' | 'forest';
 
 export interface NestKind {
   id: NestKindId;
   name: string;
   category: NestCategory;
-  /** 地面で占める広さ（上から見た半径。m、飼育ケースの縮尺） */
+  set: NestSet;
+  /** 地面で占める広さ（上から見た半径。m、置く大きさの倍率 1 のとき） */
   r: number;
+  /** 細長い物（当たり棒・羽根）の長さ（m、倍率 1 のとき）。巣では寝床のふちに沿って寝かせ、長さに沿って場所を取る */
+  len?: number;
 }
 
 /** 実物 1 cm がこの世界で何 m か（飼育ケース。普通のゆっくりの胴の直径 1 m を実物 31 cm とみて、その 1/4） */
 const CM = 4 / 31;
+/** 実物 1 cm がこの世界で何 m か（森。普通のゆっくりの縮尺） */
+const F = 1 / 31;
 
 export const NEST_KINDS: NestKind[] = [
-  { id: 'stick', name: 'アイスの当たり棒', category: 'treasure', r: 4.8 * CM },
-  { id: 'marble', name: 'ビー玉', category: 'treasure', r: 0.85 * CM },
-  { id: 'pebble', name: 'きれいな小石', category: 'treasure', r: 1.2 * CM },
-  { id: 'button', name: 'ボタン', category: 'treasure', r: 0.9 * CM },
-  { id: 'paper', name: 'ちぎった新聞紙', category: 'bedding', r: 3.4 * CM },
-  { id: 'tissue', name: 'ティッシュ', category: 'bedding', r: 2.2 * CM },
-  { id: 'cloth', name: '布の切れ端', category: 'bedding', r: 3.4 * CM },
-  { id: 'hay', name: '牧草', category: 'bedding', r: 5 * CM },
+  { id: 'stick', name: 'アイスの当たり棒', category: 'treasure', set: 'cage', r: 4.8 * CM, len: 9.5 * CM },
+  { id: 'marble', name: 'ビー玉', category: 'treasure', set: 'cage', r: 0.85 * CM },
+  { id: 'pebble', name: 'きれいな小石', category: 'treasure', set: 'cage', r: 1.2 * CM },
+  { id: 'button', name: 'ボタン', category: 'treasure', set: 'cage', r: 0.9 * CM },
+  { id: 'paper', name: 'ちぎった新聞紙', category: 'bedding', set: 'cage', r: 3.4 * CM },
+  { id: 'tissue', name: 'ティッシュ', category: 'bedding', set: 'cage', r: 2.2 * CM },
+  { id: 'cloth', name: '布の切れ端', category: 'bedding', set: 'cage', r: 3.4 * CM },
+  { id: 'hay', name: '牧草', category: 'bedding', set: 'cage', r: 5 * CM },
+  { id: 'feather', name: '鳥の羽根', category: 'treasure', set: 'forest', r: 6.2 * F, len: 12 * F },
+  { id: 'pinecone', name: '松ぼっくり', category: 'treasure', set: 'forest', r: 3.2 * F },
+  { id: 'snail', name: 'カタツムリの殻', category: 'treasure', set: 'forest', r: 1.7 * F },
+  { id: 'leaves', name: '落ち葉のひと束', category: 'bedding', set: 'forest', r: 12 * F },
+  { id: 'bigleaf', name: '大きな葉っぱ', category: 'bedding', set: 'forest', r: 15 * F },
+  { id: 'moss', name: '苔のかたまり', category: 'bedding', set: 'forest', r: 10 * F },
 ];
 
 export const CATEGORY_NAMES: Record<NestCategory, string> = { treasure: 'たからもの', bedding: 'べっど' };
@@ -50,8 +70,20 @@ export const CATEGORY_NAMES: Record<NestCategory, string> = { treasure: 'たか�
 /** 「出す」で選ぶもの：種類、またはその仲間からランダム */
 export type NestPick = NestKindId | 'treasure' | 'bedding';
 
-/** 飼育ケースを開いたときに散らばっている数（指示はなかった。少しだけ） */
-const SCATTER: Record<NestCategory, number> = { treasure: 2, bedding: 3 };
+/** 飼育ケース・森を開いたときに散らばっている数（指示はなかった。少しだけ。森は広いので少し多め） */
+const SCATTER: Record<NestSet, Record<NestCategory, number>> = { cage: { treasure: 2, bedding: 3 }, forest: { treasure: 3, bedding: 3 } };
+/**
+ * 森の苔は散らばらせず、苔の生える所（Stage.mossSites：倒木の脇・切り株・岩・木の根元）に生やしておく（指示：はがれた苔が地面に
+ * まばらに散らばっているのはおかしい。生えている所からはがして運ぶ）。生やす所の数と、1 か所に並べる枚数
+ */
+const MOSS_SITES = 2;
+const MOSS_PER_SITE = 2;
+/** 1 か所の苔を並べる間隔（m。ふちに沿って）と、隣の生えている苔に重ねてよい所（半径の和に対する比。少し重ねてひと続きに見せる） */
+const MOSS_STEP = 0.42;
+const MOSS_GAP = 0.6;
+/** 生えている苔の高さ（はがした形に対する比） */
+const ROOTED_FLAT = 0.45;
+
 /** 飼育ケース以外のマップでの大きさ（普通の大きさのゆっくりに対して実物どおり） */
 const OPEN_SCALE = 0.25;
 /** 地面に出す数の上限 */
@@ -75,6 +107,10 @@ const DRAG: Partial<Record<NestKindId, { pin: [number, number, number]; sq: numb
   cloth: { pin: [0, 0.03, -0.36], sq: 0.35, ramp: 0.35 },
   tissue: { pin: [0, 0.05, -0.42], sq: 0.35, ramp: 0.35 },
   hay: { pin: [0, 0.05, -0.45], sq: 0.5, ramp: 0.35 },
+  feather: { pin: [0, 0.1 * F, -5.6 * F], sq: 1, ramp: 0, stiff: true },
+  leaves: { pin: [0, 0.03, -0.3], sq: 0.45, ramp: 0.32 },
+  bigleaf: { pin: [0, 0.03, -14 * F], sq: 0.6, ramp: 0.35 },
+  moss: { pin: [0, 0.05, -0.26], sq: 0.7, ramp: 0.4 },
 };
 /**
  * 寝床で重ねる（settle）：下の物の高さを、この大きさ（m、飼育ケースの縮尺）の升目ごとに一番高い所で覚え、
@@ -93,6 +129,11 @@ const STIFF_TILT = 0.8;
 const FLOOR_LIFT = 0.006;
 /** 引きずった所のしわ：横の波の細かさと高さ（m） */
 const DRAG_WRINKLE = [25, 0.02];
+/** うろの中の物を沈める量（DARKEN_GLSL の uDarken。ゆっくりは 1）と、沈む・戻る速さ（1 秒あたり） */
+export const HOLLOW_DARKEN = 0.75;
+const DARKEN_RATE = 4;
+/** 暗がりの色（DARKEN_GLSL と同じ。トゥーンでない材質は色にこれを掛ける） */
+const SHADE = new THREE.Color(0.24, 0.23, 0.3);
 
 const WOOD = { lit: '#f0dcb0', shade: '#dcc290', deep: '#b89a66', rim: '#fff6e0' };
 const PEBBLES: ToonColors[] = [
@@ -117,6 +158,30 @@ const HAY = [
 ];
 /** 布の切れ端のギンガムチェックの色 */
 const CLOTHS = ['#4f86c6', '#d9506a', '#e0a020', '#4d9a5a'];
+/** 羽根の軸、松ぼっくりの鱗片（2 色）と芯、カタツムリの殻・しま・口の中・口の縁 */
+const QUILL = { lit: '#f1e6cf', shade: '#d9c9a8', deep: '#b29f7c', rim: '#ffffff' };
+const CONE_SCALES = [
+  { lit: '#a8743f', shade: '#8a5a2e', deep: '#66401f', rim: '#efd2b0' },
+  { lit: '#946433', shade: '#784c25', deep: '#573618', rim: '#e6c8a4' },
+];
+const CONE_CORE = { lit: '#6e4a2a', shade: '#583a20', deep: '#3f2916', rim: '#d7bea0' };
+const SHELL = { lit: '#d9b27a', shade: '#bf955c', deep: '#977240', rim: '#fbecd2' };
+const SHELL_BAND = { lit: '#6e4526', shade: '#5a381e', deep: '#432915', rim: '#d2b394' };
+const SHELL_MOUTH = { lit: '#5a3c26', shade: '#4a311f', deep: '#352215', rim: '#bfa58a' };
+const SHELL_LIP = { lit: '#f3e7d2', shade: '#ddcdb2', deep: '#b9a888', rim: '#ffffff' };
+/** 落ち葉の色（赤・橙・黄・茶・くすんだ黄緑。色・葉脈・ふち） */
+const FALL_LEAVES: [string, string, string][] = [
+  ['#c8432e', '#9e2f20', '#7d2418'],
+  ['#e07a2a', '#b85d1c', '#8f4614'],
+  ['#e3b23a', '#bd8f25', '#8f6a18'],
+  ['#9c6a3e', '#7c522e', '#5c3c21'],
+  ['#a9a24a', '#868034', '#646026'],
+];
+/** 大きな葉っぱの色（落ちて黄褐色になったもの・まだ緑のもの） */
+const BIG_LEAVES: [string, string, string][] = [
+  ['#c49a52', '#a37a3a', '#7d5c2a'],
+  ['#86a457', '#69863f', '#4f682e'],
+];
 
 export interface NestItem {
   readonly kind: NestKind;
@@ -133,6 +198,11 @@ export interface NestItem {
   settled: number;
   /** 運んでいる途中 */
   held: boolean;
+  /** うろの中で沈める材質（森の組はその物だけの材質を持つ）と、今の沈み具合（0〜1） */
+  readonly tints: THREE.Material[];
+  dark: number;
+  /** 生えている苔（まだはがしていない。はがすと跡に土が見える） */
+  rooted: boolean;
 }
 
 export class NestStuff {
@@ -141,8 +211,12 @@ export class NestStuff {
   /** 次に出すもの */
   kindId: NestPick = 'treasure';
   private readonly items: NestItem[] = [];
-  /** 大きさの倍率（飼育ケース 1、ほかのマップ OPEN_SCALE） */
+  /** 苔をはがした跡（片付けるときに捨てる） */
+  private readonly scars: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>[] = [];
+  /** 大きさの倍率（飼育ケース・森 1、平地 OPEN_SCALE） */
   private scale = OPEN_SCALE;
+  /** 今のマップで出る組 */
+  private setId: NestSet = 'cage';
   private readonly mats = new Map<string, THREE.Material>();
   private readonly outline: THREE.Material;
 
@@ -155,9 +229,14 @@ export class NestStuff {
     return this.items.filter((i) => i.kind.category === c).length;
   }
 
-  /** 大きさの倍率（飼育ケース 1、ほかのマップ 1/4） */
+  /** 大きさの倍率（飼育ケース・森 1、平地 1/4） */
   get size(): number {
     return this.scale;
+  }
+
+  /** 今のマップで出る種類 */
+  get kinds(): NestKind[] {
+    return NEST_KINDS.filter((k) => k.set === this.setId);
   }
 
   /** 地面にある巣材（inNest：巣に置いたもの／まだのもの。運んでいる物は除く） */
@@ -189,10 +268,47 @@ export class NestStuff {
 
   /** 持ち上げる（これから運ぶ。影を消す） */
   hold(it: NestItem): void {
+    if (it.rooted) this.peel(it);
     it.held = true;
     it.nest = false;
     it.shadow.visible = false;
     this.unsettle(it);
+  }
+
+  /** 生えている苔をはがす：跡に土の色の地肌を残す（形は苔のふちに合わせた、少し小さいでこぼこの丸） */
+  private peel(it: NestItem): void {
+    it.rooted = false;
+    this.rootedLook(it.object, false);
+    const r = this.radius(it) * 0.95; // ふちはぼかすので、苔と同じくらいの広さ
+    const geo = new THREE.CircleGeometry(r, 28);
+    const p = geo.getAttribute('position') as THREE.BufferAttribute;
+    const ph = Math.random() * 6;
+    for (let i = 1; i < p.count; i++) {
+      const a = Math.atan2(p.getY(i), p.getX(i));
+      const k = 1 + 0.12 * Math.sin(3 * a + ph) + 0.06 * Math.sin(7 * a - ph);
+      p.setXY(i, p.getX(i) * k, p.getY(i) * k);
+    }
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.MeshBasicMaterial({ map: scarTexture(), transparent: true, depthWrite: false });
+    const scar = new THREE.Mesh(geo, m);
+    scar.position.set(it.object.position.x, 0.0025, it.object.position.z);
+    this.object.add(scar);
+    this.scars.push(scar);
+  }
+
+  /**
+   * 生えている苔の見た目にする／戻す：生えている間は土のふちのない絵にし、高さを ROOTED_FLAT 倍に低くして地面になじませる
+   * （はがすと土のふちと厚みが出る）
+   */
+  private rootedLook(o: THREE.Object3D, on: boolean): void {
+    o.scale.y = this.scale * (on ? ROOTED_FLAT : 1);
+    o.traverse((m) => {
+      if (!(m instanceof THREE.Mesh) || !m.userData.rootedMap) return;
+      const mat = m.material as THREE.MeshBasicMaterial;
+      if (on && !m.userData.peeledMap) m.userData.peeledMap = mat.map;
+      mat.map = on ? m.userData.rootedMap : m.userData.peeledMap;
+      mat.needsUpdate = true;
+    });
   }
 
   /** 寝床で下の物に乗せていた分を外す */
@@ -319,6 +435,31 @@ export class NestStuff {
     this.drag(it, b);
   }
 
+  /**
+   * 毎ステップ：森の大木のうろの中にある物を暗がりに沈める（ゆっくりと同じ色に寄せる。入ると少しずつ）。足元の影も薄くする
+   * （うろの暗い床に影が明るく浮く）。運んでいる物は運んでいるゆっくりに合わせる（入口で物だけ先に沈まないよう）
+   */
+  update(dt: number): void {
+    const st = this.y.stage;
+    const k = Math.min(1, dt * DARKEN_RATE);
+    const carrier = this.y.center;
+    for (const it of this.items) {
+      if (!it.tints.length) continue;
+      const p = it.held ? carrier : it.object.position;
+      const goal = (it.held ? st?.inCave(p.x, p.z) : st?.inHollow(p.x, p.z)) ? 1 : 0;
+      if (it.dark === goal) continue;
+      it.dark += (goal - it.dark) * k;
+      if (Math.abs(goal - it.dark) < 1e-3) it.dark = goal;
+      const v = it.dark * HOLLOW_DARKEN;
+      for (const m of it.tints) {
+        const u = (m as THREE.ShaderMaterial).uniforms?.uDarken;
+        if (u) u.value = v;
+        else if (m instanceof THREE.MeshBasicMaterial) m.color.setRGB(1, 1, 1).lerp(SHADE, v);
+      }
+      (it.shadow as THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>).material.uniforms.uOpacity.value = SHADOW_OPACITY * (1 - it.dark);
+    }
+  }
+
   /** 巣に置いた印を全部外す（おうちを移したとき：次の巣作りで新しいおうちへ運び直す） */
   forgetNest(): void {
     for (const it of this.items) it.nest = false;
@@ -347,7 +488,7 @@ export class NestStuff {
         const spread = d.sq + (1 - d.sq) * Math.min(1, along / d.ramp);
         const nx = px + lat * spread;
         const ny = floor + (py - floor) * k * k + yy * 0.6;
-        const nz = pz + along * 0.92 + Math.sin(lat * DRAG_WRINKLE[0]) * DRAG_WRINKLE[1] * (1 - k);
+        const nz = pz + along * 0.92 + Math.sin(lat * DRAG_WRINKLE[0] * this.scale) * (DRAG_WRINKLE[1] / this.scale) * (1 - k);
         // 寝床に置いた物：上から押されたようにつぶし、下の物の上へ持ち上げる（sk の割合だけ）
         const h = Math.max(floor, yy + (ny - yy) * b);
         p.setXYZ(i, x + (nx - x) * b, sk ? h * (1 - (1 - BED_FLATTEN) * sk) + lift![i] * sk : h, z + (nz - z) * b);
@@ -358,14 +499,51 @@ export class NestStuff {
     });
   }
 
-  /** マップを変えたとき：片付けて、飼育ケースなら少し散らばらせる */
+  /** マップを変えたとき：片付けて、出る組と大きさを合わせ、飼育ケース・森なら少し散らばらせる */
   mapChanged(map: MapId): void {
     this.clear();
-    this.scale = map === 'cage' ? 1 : OPEN_SCALE;
-    if (map !== 'cage') return;
+    this.setId = map === 'forest' ? 'forest' : 'cage';
+    this.scale = map === 'open' ? OPEN_SCALE : 1;
+    // 出すものが別の組の種類なら、その仲間からランダムに
+    const k = NEST_KINDS.find((i) => i.id === this.kindId);
+    if (k && k.set !== this.setId) this.kindId = k.category;
+    if (map === 'open') return;
     for (const c of ['treasure', 'bedding'] as const) {
-      for (let n = 0; n < SCATTER[c]; n++) this.scatterOne(pickKind(c));
+      for (let n = 0; n < SCATTER[this.setId][c]; n++) this.scatterOne(this.pick(c, true));
     }
+    if (this.setId !== 'forest') return;
+    // 苔は生える所に生やす（ランダムに選んだ所に、ふちに沿って並べる）
+    const sites = [...(this.y.stage?.mossSites ?? [])].sort(() => Math.random() - 0.5).slice(0, MOSS_SITES);
+    for (const site of sites) for (let n = 0; n < MOSS_PER_SITE; n++) this.grow(site, (n - (MOSS_PER_SITE - 1) / 2) * MOSS_STEP);
+  }
+
+  /**
+   * 今の組の、その仲間からランダムに 1 種類。散らばらせるとき（scatter）は苔を除く（苔は生える所に生やす）
+   */
+  private pick(c: NestCategory, scatter = false): NestKind {
+    const ks = this.kinds.filter((k) => k.category === c && !(scatter && k.id === 'moss'));
+    return ks[Math.floor(Math.random() * ks.length)];
+  }
+
+  /**
+   * 苔の生える所（物のすぐ脇の点と、ふちに沿う向き）に、生えている苔を 1 枚生やす：ふちに沿って左右へずらし、物から少しずつ離して、
+   * 置ける所を探す。生やせたら true
+   */
+  private grow(site: { x: number; z: number; tx: number; tz: number }, prefer = 0): boolean {
+    const kind = NEST_KINDS.find((k) => k.id === 'moss')!;
+    const r = kind.r * this.scale;
+    for (const q of [0, 0.12, 0.24, 0.36]) {
+      for (const dt of [0, 0.2, -0.2, 0.45, -0.45, 0.8, -0.8]) {
+        for (const sgn of [1, -1]) {
+          const t = prefer + dt;
+          const x = site.x + site.tx * t - site.tz * q * sgn, z = site.z + site.tz * t + site.tx * q * sgn;
+          if (!this.fits(x, z, r, 0, false, MOSS_GAP, true)) continue;
+          this.place(kind, x, z, true);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** 1 個出す（ゆっくりの前の地面に。種類は kindId）。置ける所がなければ false */
@@ -373,7 +551,14 @@ export class NestStuff {
     if (this.items.length >= MAX_ITEMS) return false;
     const y = this.y;
     const R = y.shape.radius;
-    const kind = this.kindId === 'treasure' || this.kindId === 'bedding' ? pickKind(this.kindId) : NEST_KINDS.find((k) => k.id === this.kindId)!;
+    const named = this.kinds.find((k) => k.id === this.kindId);
+    const kind = named ?? this.pick(this.kindId === 'bedding' ? 'bedding' : 'treasure');
+    // 森の苔は、ゆっくりに近い苔の生える所に生やす（地面に転がしては出さない）
+    if (kind.id === 'moss' && this.y.stage?.mossSites.length) {
+      const c = this.y.center;
+      const sites = [...this.y.stage.mossSites].sort((a, b) => Math.hypot(a.x - c.x, a.z - c.z) - Math.hypot(b.x - c.x, b.z - c.z));
+      return sites.some((site) => this.grow(site));
+    }
     const f = bodyFacing(y);
     const side = new THREE.Vector3(f.z, 0, -f.x);
     const r = kind.r * this.scale;
@@ -403,9 +588,16 @@ export class NestStuff {
       for (const d of it.own) d.dispose();
     }
     this.items.length = 0;
+    for (const m of this.scars) {
+      this.object.remove(m);
+      m.geometry.dispose();
+      m.material.map?.dispose();
+      m.material.dispose();
+    }
+    this.scars.length = 0;
   }
 
-  /** 飼育ケースのどこか（ゆっくりから離れた所）に 1 個置く */
+  /** 飼育ケース・森のどこか（ゆっくりから離れた所）に 1 個置く */
   private scatterOne(kind: NestKind): void {
     const a = this.y.stage?.area;
     if (!a) return;
@@ -413,32 +605,38 @@ export class NestStuff {
     for (let k = 0; k < TRIES; k++) {
       const x = a.minX + Math.random() * (a.maxX - a.minX);
       const z = a.minZ + Math.random() * (a.maxZ - a.minZ);
-      if (!this.fits(x, z, r, this.y.shape.radius * 1.8)) continue;
+      if (!this.fits(x, z, r, this.y.shape.radius * 1.8, true)) continue;
       this.place(kind, x, z);
       return;
     }
   }
 
-  /** 中心（x, z）・半径 r の物を置けるか：行ける範囲の内側、皿・といれ・ほかの巣材に重ならない、体から away m より離れている */
-  private fits(x: number, z: number, r: number, away: number): boolean {
+  /**
+   * 中心（x, z）・半径 r の物を置けるか：行ける範囲の内側、皿・木・岩・といれ・ほかの巣材に重ならない、体から away m より離れている。
+   * 草むら・茂み（中に置くと隠れる）にも置かない。散らばらせるとき（scatter）は、うろの幹のまわり（中も）にも置かない
+   */
+  private fits(x: number, z: number, r: number, away: number, scatter = false, rootedGap = 1.05, hug = false): boolean {
     const st = this.y.stage;
     if (st) {
       if (!st.inside(x, z, r + 0.08)) return false;
-      if (st.overlapProp(x, z, r + 0.08)) return false;
+      // 生える苔（hug）は物の根元に寄り添う：体が乗れない所（props の円）には少しかかってよく、当たる箱の上には半分まで
+      if (!hug && st.overlapProp(x, z, r + 0.08)) return false;
       if (st.inToilet(x, z, -(r + 0.05))) return false;
+      if (st.blocked(x, z, hug ? r * 0.5 : r + 0.08) || st.inCover(x, z, r) || (scatter && st.nearCave(x, z))) return false;
     }
     const c = this.y.center;
     if (Math.hypot(x - c.x, z - c.z) < away + r) return false;
     for (const it of this.items) {
       const o = it.object.position;
-      if (Math.hypot(x - o.x, z - o.z) < (r + it.kind.r * this.scale) * 1.05) return false;
+      if (Math.hypot(x - o.x, z - o.z) < (r + it.kind.r * this.scale) * (it.rooted ? rootedGap : 1.05)) return false;
     }
     return true;
   }
 
-  private place(kind: NestKind, x: number, z: number): void {
+  private place(kind: NestKind, x: number, z: number, rooted = false): void {
     const own: { dispose(): void }[] = [];
-    const object = this.build(kind.id, own);
+    const tints: THREE.Material[] = [];
+    const object = this.build(kind.id, own, tints);
     // 足元の影（地面から浮いて見えず、物として見分けやすいように）。形の広がりに合わせた楕円
     const box = new THREE.Box3().setFromObject(object);
     const shadow = createBlobShadow();
@@ -448,10 +646,11 @@ export class NestStuff {
     own.push(shadow.geometry, shadow.material);
     object.add(shadow);
     object.scale.setScalar(this.scale);
+    if (rooted) this.rootedLook(object, true);
     object.position.set(x, 0, z);
     object.rotation.y = Math.random() * Math.PI * 2;
     this.object.add(object);
-    this.items.push({ kind, object, own, shadow, height: box.max.y, nest: false, held: false, settled: 0 });
+    this.items.push({ kind, object, own, shadow, height: box.max.y, nest: false, held: false, settled: 0, tints, dark: 0, rooted });
   }
 
   /** トゥーンの材質（色ごとに 1 つを使い回す。地面へ押し付ける処理は切る：薄い物が潰れないよう、底を地面に置いて作る） */
@@ -465,14 +664,30 @@ export class NestStuff {
     return m;
   }
 
-  /** 形を作る（m、飼育ケースの縮尺。底が y = 0、上から見た中心が原点） */
-  private build(id: NestKindId, own: { dispose(): void }[]): THREE.Group {
+  /**
+   * 形を作る（m、倍率 1 の大きさ。底が y = 0、上から見た中心が原点）。森の組は、うろの中で沈めるため材質をその物だけで持つ
+   * （tints に入れる）
+   */
+  private build(id: NestKindId, own: { dispose(): void }[], tints: THREE.Material[]): THREE.Group {
     const g = new THREE.Group();
     const add = (geo: THREE.BufferGeometry, m: THREE.Material, outline = true) => {
       own.push(geo);
       const o = withOutline(geo, m, outline ? this.outline : null);
       g.add(o);
       return o;
+    };
+    // その物だけのトゥーンの材質・絵を貼った薄い板の材質（森の組）
+    const toon = (c: ToonColors, doubleSide = false) => {
+      const m = createAccessoryMaterial(this.y.bodyMaterial, c, { rim: 0.2, doubleSide, ground: -100 });
+      own.push(m);
+      tints.push(m);
+      return m;
+    };
+    const sheet = (tex: THREE.Texture) => {
+      const m = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true });
+      own.push(tex, m);
+      tints.push(m);
+      return m;
     };
     switch (id) {
       case 'stick': {
@@ -595,6 +810,166 @@ export class NestStuff {
         }
         break;
       }
+      case 'feather': {
+        // 鳥の羽根（実物 12 cm）：茶色に濃いしまの羽（絵を貼った薄い板。外は透かす）と、白っぽい軸。-z が根元（軸だけの所）。
+        // 床に寝て、根元と先が少し浮き、羽のふちは少し反る
+        const L = 12 * F, W = 3.4 * F;
+        const lift = (x: number, z: number) => 0.45 * F * ((2 * z) / L) ** 2 + 0.25 * F * ((2 * x) / W) ** 2;
+        const geo = new THREE.PlaneGeometry(W, L, 6, 24).rotateX(-Math.PI / 2);
+        const p = geo.getAttribute('position') as THREE.BufferAttribute;
+        for (let i = 0; i < p.count; i++) p.setY(i, lift(p.getX(i), p.getZ(i)) + 0.003);
+        shadeSheet(geo, [0.62, 0.6, 0.58]);
+        own.push(geo);
+        g.add(new THREE.Mesh(geo, sheet(featherTexture())));
+        const shaft = tubeAlong((t) => {
+          const z = -L / 2 + t * L * 0.97;
+          return new THREE.Vector3(0, lift(0, z) + 0.12 * F * (1 - t) + 0.004, z);
+        }, (t) => (0.13 - 0.1 * t) * F, 24, 6);
+        add(shaft, toon(QUILL), false);
+        break;
+      }
+      case 'pinecone': {
+        // 松ぼっくり（実物 長さ 6 cm・太さ 4 cm）：芯のまわりに、開いた鱗片をらせん（黄金角）に並べる。横に寝かせる（+z が先）
+        const L = 6 * F, R = 2 * F, N = 64;
+        const scales: THREE.BufferGeometry[][] = [[], []];
+        const m4 = new THREE.Matrix4();
+        const up = new THREE.Vector3(0, 1, 0);
+        for (let i = 0; i < N; i++) {
+          const t = (i + 0.5) / N;
+          const a = i * 2.39996;
+          // 太さ：根元の少し先がいちばん太く、先へ細る
+          const rr = R * Math.sin(Math.PI * (0.12 + 0.8 * t ** 0.85));
+          const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+          // 鱗片は外へ開き、少し先の側へ向く
+          const dir = out.clone().multiplyScalar(Math.cos(0.5)).addScaledVector(up, Math.sin(0.5)).normalize();
+          const tan = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+          const nrm = new THREE.Vector3().crossVectors(dir, tan).normalize();
+          const len = rr * 0.62 + R * 0.12, wid = R * (0.26 + 0.18 * Math.sin(Math.PI * t)), th = R * 0.11;
+          const sc = new THREE.SphereGeometry(1, 8, 6).scale(wid, th, len).translate(0, 0, len * 0.85);
+          m4.makeBasis(tan, nrm, dir).setPosition(out.x * rr * 0.4, (t - 0.5) * L * 0.92, out.z * rr * 0.4);
+          scales[i % 3 === 0 ? 1 : 0].push(sc.applyMatrix4(m4));
+        }
+        const core = new THREE.SphereGeometry(1, 16, 12).scale(R * 0.5, L * 0.5, R * 0.5);
+        const lay = (geo: THREE.BufferGeometry) => geo.rotateX(Math.PI / 2).rotateZ(0.12);
+        const parts = [lay(core), ...scales.map((list) => {
+          const geo = lay(mergeGeometries(list));
+          for (const x of list) x.dispose();
+          return geo;
+        })];
+        const box = new THREE.Box3();
+        for (const geo of parts) {
+          geo.computeBoundingBox();
+          box.union(geo.boundingBox!);
+        }
+        for (const geo of parts) geo.translate(0, -box.min.y, 0);
+        add(parts[0], toon(CONE_CORE));
+        add(parts[1], toon(CONE_SCALES[0]));
+        add(parts[2], toon(CONE_SCALES[1]));
+        break;
+      }
+      case 'snail': {
+        // カタツムリの空の殻（実物 直径 3 cm）：太りながら巻く管（3 巻き半）に、濃い色のしまを 1 本。口は内が暗く、縁が白っぽい。横に寝かせる
+        const turns = 3.4, k = Math.log(13) / (turns * Math.PI * 2);
+        const D = 3 * F, rEnd = D * 0.27;
+        const r0 = rEnd / Math.exp(k * turns * Math.PI * 2);
+        // 巻きの中心から管の真ん中までの距離・管の太さ・巻く軸の向きの高さ
+        const at = (t: number) => {
+          const th = t * turns * Math.PI * 2, g2 = r0 * Math.exp(k * th);
+          return { th, c: g2 * 1.25, tube: g2, h: -g2 * 0.9 };
+        };
+        const path = (t: number, out = 0, lift = 0) => {
+          const q = at(t);
+          return new THREE.Vector3(Math.cos(q.th) * (q.c + out * q.tube), q.h + lift * q.tube, Math.sin(q.th) * (q.c + out * q.tube));
+        };
+        const shell = tubeAlong((t) => path(t), (t) => at(t).tube, 140, 14);
+        const band = tubeAlong((t) => path(t, 0.93, 0.25), (t) => at(t).tube * 0.16, 140, 6);
+        const end = path(1), tangent = path(1).sub(path(0.995)).normalize();
+        const mouth = new THREE.CircleGeometry(rEnd * 0.9, 20);
+        const lip = new THREE.TorusGeometry(rEnd * 0.95, rEnd * 0.1, 6, 24);
+        const face = new THREE.Matrix4().lookAt(new THREE.Vector3(), tangent, new THREE.Vector3(0, 1, 0)).setPosition(end);
+        mouth.applyMatrix4(face);
+        lip.applyMatrix4(face);
+        const parts = [shell, band, mouth, lip];
+        for (const geo of parts) geo.rotateX(Math.PI / 2).rotateY(0.6);
+        const box = new THREE.Box3();
+        for (const geo of parts) {
+          geo.computeBoundingBox();
+          box.union(geo.boundingBox!);
+        }
+        const cx = (box.min.x + box.max.x) / 2, cz = (box.min.z + box.max.z) / 2;
+        for (const geo of parts) geo.translate(-cx, -box.min.y, -cz);
+        add(shell, toon(SHELL));
+        add(band, toon(SHELL_BAND), false);
+        add(mouth, toon(SHELL_MOUTH, true), false);
+        add(lip, toon(SHELL_LIP), false);
+        break;
+      }
+      case 'leaves': {
+        // 落ち葉のひと束（実物 25 cm ほど）：色づいた葉（もみじの形・丸い葉）7 枚を、少しずつずらして重ねる。葉は少し丸まる
+        const n = 7;
+        for (let i = 0; i < n; i++) {
+          const maple = Math.random() < 0.45;
+          const L = (9 + Math.random() * 4) * F, W = maple ? L : L * 0.55;
+          const geo = new THREE.PlaneGeometry(W, L, 10, 12).rotateX(-Math.PI / 2);
+          const p = geo.getAttribute('position') as THREE.BufferAttribute;
+          const curl = (0.4 + Math.random() * 0.8) * F, ph = Math.random() * 6;
+          for (let j = 0; j < p.count; j++) {
+            const u = (2 * p.getX(j)) / W, v = (2 * p.getZ(j)) / L;
+            p.setY(j, curl * (u * u + 0.5 * v * v) + 0.15 * F * Math.sin(u * 3 + v * 2 + ph));
+          }
+          // 重ねる：後の葉ほど上。束の真ん中のまわりに散らす
+          const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * 5 * F;
+          geo.rotateY(Math.random() * Math.PI * 2).translate(Math.sin(a) * d, 0.004 + i * 0.35 * F, Math.cos(a) * d);
+          shadeSheet(geo, [0.62, 0.6, 0.6]);
+          own.push(geo);
+          g.add(new THREE.Mesh(geo, sheet(leafTexture(maple ? 'maple' : 'oval', FALL_LEAVES[Math.floor(Math.random() * FALL_LEAVES.length)]))));
+        }
+        break;
+      }
+      case 'bigleaf': {
+        // 大きな葉っぱ（ホオノキの葉のような 1 枚。実物 30 × 13 cm）：先寄りが幅広い卵形、短い葉柄（-z）。
+        // 真ん中の葉脈で V に折れ、長さの向きにもゆるく反る
+        const L = 30 * F, W = 13 * F;
+        const geo = new THREE.PlaneGeometry(W, L, 12, 32).rotateX(-Math.PI / 2);
+        const p = geo.getAttribute('position') as THREE.BufferAttribute;
+        const ph = Math.random() * 6;
+        for (let i = 0; i < p.count; i++) {
+          const u = (2 * p.getX(i)) / W, v = (2 * p.getZ(i)) / L;
+          p.setY(i, 1.1 * F * Math.abs(u) ** 1.3 + 0.9 * F * v * v + 0.2 * F * Math.sin(v * 7 + ph) * Math.abs(u));
+        }
+        geo.translate(0, 0.004, 0);
+        shadeSheet(geo, [0.6, 0.6, 0.58]);
+        own.push(geo);
+        g.add(new THREE.Mesh(geo, sheet(leafTexture('big', BIG_LEAVES[Math.random() < 0.7 ? 0 : 1]))));
+        break;
+      }
+      case 'moss': {
+        // 苔のかたまり（はがした苔のマット。実物 20 × 16 cm・厚み 2 cm ほど）：ふちがでこぼこの丸い座布団の形。上はもこもこ、
+        // ふちは土の色で地面へ下りる（絵で外を透かし、ふちの土を描く）
+        const W = 20 * F, D = 16 * F, T = 2.2 * F;
+        const ph = Math.random() * 6;
+        const edge = (th: number) => 0.9 * (1 + 0.1 * Math.sin(3 * th + ph) + 0.06 * Math.sin(5 * th - ph * 1.7));
+        const geo = new THREE.PlaneGeometry(W, D, 48, 40).rotateX(-Math.PI / 2);
+        const p = geo.getAttribute('position') as THREE.BufferAttribute;
+        for (let i = 0; i < p.count; i++) {
+          const x = p.getX(i), z = p.getZ(i);
+          const u = (2 * x) / W, v = (2 * z) / D;
+          const q = Math.hypot(u, v) / edge(Math.atan2(v, u));
+          // ふちはなだらかに土へ下りる（急だと切り立った土の塊に見えた）。もこもこは大きめのうねりと、細かい粒を少し
+          const body = THREE.MathUtils.smoothstep(1 - q, 0, 0.45);
+          const bumps = 0.35 * T * (0.5 + 0.5 * Math.sin(x * 70 + ph) * Math.sin(z * 64 - ph)) + 0.05 * T * Math.sin(x * 160 + z * 140);
+          p.setY(i, (T + bumps) * body + 0.003);
+        }
+        shadeSheet(geo, [0.55, 0.58, 0.52]);
+        own.push(geo);
+        // 生えている間の絵（土のふちなし）も作っておく（place・peel が差し替える）
+        const rootedMap = mossTexture(edge, false);
+        own.push(rootedMap);
+        const mesh = new THREE.Mesh(geo, sheet(mossTexture(edge)));
+        mesh.userData.rootedMap = rootedMap;
+        g.add(mesh);
+        break;
+      }
     }
     return g;
   }
@@ -606,11 +981,6 @@ export class NestStuff {
   }
 }
 
-/** 仲間からランダムに 1 種類 */
-function pickKind(c: NestCategory): NestKind {
-  const ks = NEST_KINDS.filter((k) => k.category === c);
-  return ks[Math.floor(Math.random() * ks.length)];
-}
 
 /** ビー玉の中の羽：中心を通る薄い板を、上下でねじる（半径 r・幅 w） */
 function twistedVane(r: number, w: number): THREE.BufferGeometry {
@@ -691,19 +1061,23 @@ function crumpledSheet(w: number, d: number, style: 'paper' | 'cloth' | 'tissue'
   }
   geo.translate(0, -min + 0.004, 0);
   if (style === 'paper') geo = geo.toNonIndexed();
+  const lo = style === 'tissue' ? 0.72 : 0.6;
+  // 暗い所の色：ティッシュは白なので青みの灰色に寄せる（灰色のままだと汚れて見える）
+  shadeSheet(geo, style === 'tissue' ? [0.74, 0.77, 0.88] : [lo, lo, lo]);
+  return geo;
+}
+
+/** 絵を貼った薄い板の凹凸が見えるよう、光の当たり方を頂点の色にする（dark は光の当たらない所の色） */
+function shadeSheet(geo: THREE.BufferGeometry, dark: number[]): void {
   geo.computeVertexNormals();
   const n = geo.getAttribute('normal') as THREE.BufferAttribute;
   const L = new THREE.Vector3(0.4, 1, 0.3).normalize();
-  const lo = style === 'tissue' ? 0.72 : 0.6;
-  // 暗い所の色：ティッシュは白なので青みの灰色に寄せる（灰色のままだと汚れて見える）
-  const dark = style === 'tissue' ? [0.74, 0.77, 0.88] : [lo, lo, lo];
   const col = new Float32Array(n.count * 3);
   for (let i = 0; i < n.count; i++) {
     const t = THREE.MathUtils.smoothstep(n.getX(i) * L.x + n.getY(i) * L.y + n.getZ(i) * L.z, 0.25, 1);
     for (let k = 0; k < 3; k++) col[i * 3 + k] = dark[k] + (1 - dark[k]) * t;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  return geo;
 }
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
@@ -850,5 +1224,279 @@ function scrapTexture(kind: 'paper' | 'cloth' | 'tissue'): THREE.CanvasTexture {
     g.lineWidth = 2.5;
     g.stroke();
   }
+  return texture(c);
+}
+
+/**
+ * 鳥の羽根の絵（縦長。上が根元 = 物の -z）：根元の 2 割は軸だけ（透かす）。羽は左右で幅が違い、先が丸い。
+ * 茶色の地に濃いしま（羽枝の向きに斜め）、羽枝の細い線、ところどころ羽が割れたすき間
+ */
+function featherTexture(): THREE.CanvasTexture {
+  const Wc = 64, Hc = 256;
+  const [c, g] = canvas(Wc, Hc);
+  const top = Hc * 0.2, mid = Wc / 2;
+  // 羽のふち：左は広く右は狭い。根元から先へふくらみ、先は丸く閉じる
+  const half = (t: number, side: number) => (side < 0 ? 0.46 : 0.34) * Wc * Math.sin(Math.PI * Math.min(1, t * 0.62 + 0.08)) ** 0.7 * (t > 0.85 ? Math.sqrt(Math.max(0, (1 - t) / 0.15)) : 1);
+  const path = () => {
+    g.beginPath();
+    g.moveTo(mid, top);
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40;
+      g.lineTo(mid - half(t, -1), top + t * (Hc - top - 2));
+    }
+    for (let i = 40; i >= 0; i--) {
+      const t = i / 40;
+      g.lineTo(mid + half(t, 1), top + t * (Hc - top - 2));
+    }
+    g.closePath();
+  };
+  path();
+  g.fillStyle = '#9a7650';
+  g.fill();
+  g.save();
+  path();
+  g.clip();
+  // 濃いしま：羽枝の向き（軸から先の側へ斜め）に並ぶ帯
+  g.fillStyle = '#4e3826';
+  for (let y = top + 10; y < Hc + 20; y += 22) {
+    g.beginPath();
+    g.moveTo(0, y + 12);
+    g.lineTo(mid, y);
+    g.lineTo(Wc, y + 12);
+    g.lineTo(Wc, y + 21);
+    g.lineTo(mid, y + 9);
+    g.lineTo(0, y + 21);
+    g.closePath();
+    g.fill();
+  }
+  // 羽枝の細い線
+  g.strokeStyle = 'rgba(255,240,215,0.22)';
+  g.lineWidth = 1;
+  for (let y = top - 10; y < Hc + 20; y += 4) {
+    g.beginPath();
+    g.moveTo(0, y + 14);
+    g.lineTo(mid, y);
+    g.lineTo(Wc, y + 14);
+    g.stroke();
+  }
+  // 根元に近い所は綿毛のように白っぽく
+  const fluff = g.createLinearGradient(0, top, 0, top + Hc * 0.18);
+  fluff.addColorStop(0, 'rgba(240,228,210,0.85)');
+  fluff.addColorStop(1, 'rgba(240,228,210,0)');
+  g.fillStyle = fluff;
+  g.fillRect(0, top, Wc, Hc * 0.18);
+  g.restore();
+  // 羽が割れたすき間（ふちから軸の方へ斜めの切れ目）
+  g.globalCompositeOperation = 'destination-out';
+  g.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    const side = i % 2 ? 1 : -1;
+    const y = top + Hc * (0.25 + Math.random() * 0.45);
+    g.beginPath();
+    g.moveTo(mid + side * Wc * 0.5, y + 14);
+    g.lineTo(mid + side * Wc * 0.12, y + 2);
+    g.stroke();
+  }
+  g.globalCompositeOperation = 'source-over';
+  return texture(c);
+}
+
+/**
+ * 葉の絵（上が葉柄 = 物の -z）。colors は 色・葉脈・ふち
+ *   maple … もみじの形（5 つに裂けた手のひら形）
+ *   oval … 先のとがった丸い葉（ふちに細かいぎざぎざ）
+ *   big … 先寄りが幅広い大きな卵形（ホオノキの葉のような 1 枚）。ふちはなめらか
+ * 落ちた葉らしく、茶色のしみをいくつか
+ */
+function leafTexture(shape: 'maple' | 'oval' | 'big', colors: [string, string, string]): THREE.CanvasTexture {
+  const [Wc, Hc] = shape === 'big' ? [128, 288] : [128, 128];
+  const [c, g] = canvas(Wc, Hc);
+  const [fill, vein, rim] = colors;
+  const pts: [number, number][] = [];
+  // 葉柄の付け根（上）と、葉の先（下）
+  const stemTop = 2, baseY = shape === 'maple' ? Hc * 0.4 : Hc * 0.12;
+  // もみじ：付け根（上寄り）から下へ広がる 5 つのとがった裂片。角度 φ は真下が 0
+  const lobes = [-0.62, -0.31, 0, 0.31, 0.62].map((k) => k * Math.PI);
+  const mapleR = Hc * 0.55;
+  if (shape === 'maple') {
+    const cx = Wc / 2, cy = Hc * 0.4;
+    for (let i = 0; i <= 140; i++) {
+      const phi = Math.PI * (-0.8 + 1.6 * (i / 140));
+      const lobe = Math.max(...lobes.map((l) => Math.exp(-(((phi - l) / 0.11) ** 2))));
+      const r = mapleR * (0.38 + 0.62 * lobe) * (0.97 + 0.03 * Math.sin(i * 2.1));
+      pts.push([cx + Math.sin(phi) * r, cy + Math.cos(phi) * r]);
+    }
+  } else {
+    const len = Hc - baseY - 3, widest = shape === 'big' ? 0.62 : 0.45, half = Wc * 0.47;
+    const profile = (t: number) => half * Math.sin(Math.PI * Math.min(1, t < widest ? (t / widest) * 0.5 : 0.5 + ((t - widest) / (1 - widest)) * 0.5)) ** (shape === 'big' ? 0.8 : 1);
+    for (let i = 0; i <= 60; i++) {
+      const t = i / 60;
+      const saw = shape === 'oval' ? (i % 2 ? 1.5 : 0) : 0;
+      pts.push([Wc / 2 + profile(t) + saw, baseY + t * len]);
+    }
+    for (let i = 60; i >= 0; i--) {
+      const t = i / 60;
+      const saw = shape === 'oval' ? (i % 2 ? 1.5 : 0) : 0;
+      pts.push([Wc / 2 - profile(t) - saw, baseY + t * len]);
+    }
+  }
+  const path = () => {
+    g.beginPath();
+    pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.closePath();
+  };
+  path();
+  g.fillStyle = fill;
+  g.fill();
+  g.save();
+  path();
+  g.clip();
+  // 色むら（ところどころ明るく・暗く）と、茶色のしみ
+  for (let i = 0; i < 14; i++) {
+    g.fillStyle = i % 2 ? 'rgba(255,240,200,0.12)' : 'rgba(60,30,10,0.12)';
+    g.beginPath();
+    g.arc(Math.random() * Wc, Math.random() * Hc, 6 + Math.random() * 14, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = 'rgba(90,55,25,0.55)';
+  for (let i = 0; i < 4; i++) {
+    g.beginPath();
+    g.arc(Math.random() * Wc, baseY + Math.random() * (Hc - baseY), 1.5 + Math.random() * 3, 0, Math.PI * 2);
+    g.fill();
+  }
+  // 葉脈：真ん中の 1 本（もみじは付け根から裂片ごとに）と、横の細い脈
+  g.strokeStyle = vein;
+  g.lineCap = 'round';
+  if (shape === 'maple') {
+    const cx = Wc / 2, cy = Hc * 0.4;
+    g.lineWidth = 2.2;
+    for (const l of lobes) {
+      g.beginPath();
+      g.moveTo(cx, cy);
+      g.lineTo(cx + Math.sin(l) * mapleR * 0.92, cy + Math.cos(l) * mapleR * 0.92);
+      g.stroke();
+    }
+  } else {
+    g.lineWidth = shape === 'big' ? 3 : 2;
+    g.beginPath();
+    g.moveTo(Wc / 2, baseY);
+    g.lineTo(Wc / 2, Hc - 4);
+    g.stroke();
+    g.lineWidth = 1.2;
+    const n = shape === 'big' ? 14 : 7;
+    for (let i = 1; i < n; i++) {
+      const y = baseY + ((Hc - baseY) * i) / n;
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(Wc / 2, y);
+        g.quadraticCurveTo(Wc / 2 + side * Wc * 0.2, y + 6, Wc / 2 + side * Wc * 0.42, y + (shape === 'big' ? 22 : 14));
+        g.stroke();
+      }
+    }
+  }
+  g.restore();
+  path();
+  g.strokeStyle = rim;
+  g.lineWidth = 2;
+  g.stroke();
+  // 葉柄
+  g.strokeStyle = rim;
+  g.lineWidth = shape === 'big' ? 4 : 3;
+  g.beginPath();
+  g.moveTo(Wc / 2, stemTop);
+  g.lineTo(Wc / 2, baseY + 2);
+  g.stroke();
+  return texture(c);
+}
+
+/**
+ * 苔のかたまりの絵（物の上から見た形と同じ並び）：ふちのでこぼこの形（edge：向き θ でのふちの距離。-1〜1 に寄せた座標）の内を、
+ * ふちは土の茶色、内は緑。緑には明るい・暗い粒をたくさん（もこもこ）と、ところどころ細い胞子の柄（赤茶の点）。
+ * soil が false なら生えている苔：土のふちはなく、ふちまで緑で、ふちの外へ粒が少しはみ出して地面になじむ
+ */
+function mossTexture(edge: (th: number) => number, soil = true): THREE.CanvasTexture {
+  const S = 256;
+  const [c, g] = canvas(S, S);
+  const blob = (k: number) => {
+    g.beginPath();
+    for (let i = 0; i <= 96; i++) {
+      const th = (i / 96) * Math.PI * 2;
+      const r = edge(th) * k;
+      const x = S / 2 + Math.cos(th) * r * (S / 2), y = S / 2 + Math.sin(th) * r * (S / 2);
+      if (i) g.lineTo(x, y);
+      else g.moveTo(x, y);
+    }
+    g.closePath();
+  };
+  const inner = soil ? 0.8 : 0.97;
+  if (soil) {
+    blob(1.0);
+    g.fillStyle = '#5e4630';
+    g.fill();
+  }
+  blob(inner);
+  g.fillStyle = '#5f8a3a';
+  g.fill();
+  if (!soil) {
+    // ふちの外へはみ出す粒（地面になじむ）
+    for (let i = 0; i < 260; i++) {
+      const th = Math.random() * Math.PI * 2, r = edge(th) * (0.9 + Math.random() * 0.14);
+      g.fillStyle = Math.random() < 0.5 ? '#6f9a43' : '#4c7330';
+      g.beginPath();
+      g.arc(S / 2 + Math.cos(th) * r * (S / 2), S / 2 + Math.sin(th) * r * (S / 2), 2 + Math.random() * 3, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  g.save();
+  blob(inner);
+  g.clip();
+  for (let i = 0; i < 1600; i++) {
+    const r = Math.random();
+    g.fillStyle = r < 0.45 ? '#7ea84b' : r < 0.8 ? '#4c7330' : r < 0.97 ? '#9cc35f' : '#8a4a2a';
+    const x = Math.random() * S, y = Math.random() * S, d = r < 0.97 ? 2 + Math.random() * 3 : 1.5;
+    g.beginPath();
+    g.arc(x, y, d, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.restore();
+  if (!soil) return texture(c);
+  // ふちの土に、根の細い線
+  g.strokeStyle = 'rgba(40,28,18,0.6)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 40; i++) {
+    const th = Math.random() * Math.PI * 2, r = edge(th) * (0.88 + Math.random() * 0.1);
+    const x = S / 2 + Math.cos(th) * r * (S / 2), y = S / 2 + Math.sin(th) * r * (S / 2);
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + Math.cos(th) * 5, y + Math.sin(th) * 5);
+    g.stroke();
+  }
+  return texture(c);
+}
+
+/**
+ * 苔をはがした跡の絵：湿った土の地肌（明るい・暗い粒）と、ちぎれ残った苔の粒。ふちは地面へぼかす
+ * （一色の濃い茶色だと、穴かしみのようにべったり見えた）
+ */
+function scarTexture(): THREE.CanvasTexture {
+  const S = 128;
+  const [c, g] = canvas(S, S);
+  g.fillStyle = '#6a4f36';
+  g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 500; i++) {
+    const r = Math.random();
+    g.fillStyle = r < 0.5 ? '#543d29' : r < 0.85 ? '#7d6146' : r < 0.95 ? '#3f2d1f' : '#5f8a3a';
+    g.beginPath();
+    g.arc(Math.random() * S, Math.random() * S, 1 + Math.random() * 2.2, 0, Math.PI * 2);
+    g.fill();
+  }
+  // ふちをぼかす（真ん中は濃く、外へ透ける）
+  g.globalCompositeOperation = 'destination-in';
+  const fade = g.createRadialGradient(S / 2, S / 2, S * 0.25, S / 2, S / 2, S * 0.5);
+  fade.addColorStop(0, 'rgba(0,0,0,0.85)');
+  fade.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = fade;
+  g.fillRect(0, 0, S, S);
+  g.globalCompositeOperation = 'source-over';
   return texture(c);
 }
