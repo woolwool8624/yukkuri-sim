@@ -19,11 +19,12 @@ export type LineKey =
   | 'forageGo' | 'forageLower' | 'forageOnHat' | 'forageFull' | 'forageBusy' | 'forageSpill'
   | 'stashStart' | 'stashIn' | 'stashDone' | 'stashFull' | 'stashNone'
   | 'boxGo' | 'boxPush' | 'boxDone' | 'boxStuck' | 'boxBump'
+  | 'koroDone'
   | 'dishNone' | 'dishEmpty' | 'waterNone'
   | 'cleanNoToilet' | 'cleanNone' | 'cleanPick' | 'cleanDone'
   | 'nestNoHome' | 'nestNone' | 'nestBed' | 'nestTreasure' | 'nestFood' | 'nestDone'
   | 'grillStart' | 'grillScream' | 'grillNoHop' | 'grillNoMove' | 'grillAfter' | 'grillStuck' | 'grillEscape'
-  | 'declarePoo' | 'declareExercise' | 'declareMeal' | 'declareSleep' | 'declareDrink' | 'declareClean' | 'declareNest'
+  | 'declarePoo' | 'declareExercise' | 'declareMeal' | 'declareSleep' | 'declareDrink' | 'declareClean' | 'declareNest' | 'declareKoro'
   | 'greetYukkuri' | 'greetEatMe' | 'greetLast' | 'greetPlace'
   | 'dyingGasp';
 
@@ -104,10 +105,12 @@ const COMMON: Lines = {
   grillStuck: ['ゆぅ…あんよさんがうごかないよ…', 'うごけないよ…'],
   grillEscape: ['あぢゅい！ごーろごーろするよ！', 'ゆわあああ！あぢゅいいい！'],
   boxBump: ['ゆっ！？はこさんがあるよ…', 'とおれないよ…', 'ゆぅ…じゃまだよ…'],
+  koroDone: ['ゆっくりころがったよ！', 'ゆふ〜♪', 'めがまわるよ〜', 'たのしかったよ！'],
   declarePoo: ['うんうんするよ！'],
   declareExercise: ['うんうんたいそうはじまるよ！'],
   declareMeal: ['すーぱーむしゃむしゃたいむはじまるよ！'],
   declareSleep: ['すーやすーやするよ！'],
+  declareKoro: ['こーろこーろするよ！'],
   declareDrink: ['ごーくごーくするよ！'],
   declareClean: ['ゆぅ…おといれにはこぶよ…'],
   declareNest: ['おうちづくりをはじめるよ！'],
@@ -191,10 +194,12 @@ const MARISA_NOZE: Partial<Lines> = {
   grillStuck: ['ゆぅ…あんよさんがうごかないのぜ…', 'うごけないのぜ…'],
   grillEscape: ['あぢゅい！ごーろごーろするのぜ！', 'ゆわあああ！あぢゅいのぜええ！'],
   boxBump: ['ゆっ！？はこさんがじゃまなのぜ…', 'とおれないのぜ…', 'ゆぅ…どくのぜ…'],
+  koroDone: ['ゆっくりころがったのぜ！', 'ゆふ〜♪', 'めがまわるのぜ〜', 'たのしかったのぜ！'],
   declarePoo: ['うんうんするのぜ！'],
   declareExercise: ['うんうんたいそうはじまるのぜ！'],
   declareMeal: ['すーぱーむしゃむしゃたいむはじまるのぜ！'],
   declareSleep: ['すーやすーやするのぜ！'],
+  declareKoro: ['こーろこーろするのぜ！'],
   declareDrink: ['ごーくごーくするのぜ！'],
   declareClean: ['ゆぅ…おといれにはこぶのぜ…'],
   declareNest: ['おうちづくりをはじめるのぜ！'],

@@ -63,7 +63,7 @@ export const DEFAULT_LOCOMOTION: LocomotionParams = {
   wanderRadius: 3,
 };
 
-type State = 'idle' | 'crouch' | 'air' | 'land' | 'crawl' | 'moru' | 'recover' | 'lieDown' | 'lying' | 'getUp';
+type State = 'idle' | 'crouch' | 'air' | 'land' | 'crawl' | 'moru' | 'recover' | 'lieDown' | 'lying' | 'getUp' | 'koro';
 
 /**
  * 横になる体勢。体の部位は「前面の下部がお腹、底があんよ」。
@@ -122,6 +122,7 @@ const STATE_LABEL: Record<State, string> = {
   lieDown: '横になる',
   lying: '横になっている',
   getUp: '起き上がる',
+  koro: 'こーろこーろ',
 };
 
 /** これ以上傾いたら転倒とみなして起き上がる (rad) */
@@ -320,6 +321,16 @@ export class Locomotion {
   /** 起き上がってからの猶予（秒）。この間に倒れても寝転ばず立て直す */
   private riseGrace = 0;
   private readonly _rq = new Quaternion();
+  /**
+   * こーろこーろ：始めた時の立った向き・回す軸（水平。体の前向き）・前へ傾ける軸（水平。体の右左）。
+   * 回した角度 koroAngle と前へ傾けた角度 koroLean は、呼ぶ側が毎ステップ決める
+   */
+  private readonly koroStart = new Quaternion();
+  private readonly koroAxis = new Vector3();
+  private readonly koroLeanAxis = new Vector3();
+  private readonly _lq = new Quaternion();
+  koroAngle = 0;
+  koroLean = 0;
   /** 今の転がりの速さ（rad/s）と、つつかれて転がっている最中か（転がり終えたら近い方の寝転びに落ち着かせる） */
   private rollSpeed = ROLL_SPEED;
   private knockRoll = false;
@@ -645,9 +656,43 @@ export class Locomotion {
     return this.isLying ? (this.lieSign > 0 ? 'prone' : 'supine') : null;
   }
 
-  /** 体を倒している（倒れ込み・横になっている・起き上がりの途中）か。跳ねる・這うときのつぶれとは別 */
+  /** 体を倒している（倒れ込み・横になっている・起き上がりの途中・こーろこーろ）か。跳ねる・這うときのつぶれとは別 */
   get tilted(): boolean {
-    return this.isLying || this.state === 'getUp';
+    return this.isLying || this.state === 'getUp' || this.state === 'koro';
+  }
+
+  /** こーろこーろで転がっている途中か */
+  get koroing(): boolean {
+    return this.state === 'koro';
+  }
+
+  /**
+   * こーろこーろを始める：立った向きのまま、体の前向きの軸のまわりに koroAngle だけ回した姿勢を指令し続ける（横へ転がる。
+   * 正の角度で、上の面が体から見て右＝ローカル -X へ倒れる＝右へ転がる）。進むのは体と地面の摩擦まかせ。
+   * 寝転んでいる・ほかの動きの途中は始めない（false）
+   */
+  koroBegin(): boolean {
+    if (this.holding || this.immobile || this.isLying || this.state === 'getUp' || this.state === 'air') return false;
+    const yaw = this.body.yaw;
+    this.koroStart.setFromAxisAngle(Y_AXIS, yaw);
+    this.koroAxis.set(Math.sin(yaw), 0, Math.cos(yaw));
+    // 真上 × 前 のまわりに正に回すと、上の面が前へ倒れる
+    this.koroLeanAxis.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    this.koroAngle = 0;
+    this.koroLean = 0;
+    this.poseCmd.copy(this.koroStart);
+    this.gesture = null;
+    this.hasTarget = false;
+    this.go('koro');
+    return true;
+  }
+
+  /** こーろこーろを終える：立った向きへ戻す（途中でやめたときは、体勢を立て直すのに任せる） */
+  koroEnd(): void {
+    if (this.state !== 'koro') return;
+    this.poseCmd.copy(this.koroStart);
+    this.riseGrace = RISE_GRACE;
+    this.go('recover');
   }
 
   /** 横に転がって仰向けになっている（倒れ込み中を含む）か。前後に長い体型の仰向け */
@@ -821,7 +866,7 @@ export class Locomotion {
     // 転倒したら、何をしていても中断して起き上がる
     const tilt = tiltOf(b);
     // （自分から横になる・起き上がる途中は除く）
-    const selfLying = this.state === 'lieDown' || this.state === 'lying' || this.state === 'getUp';
+    const selfLying = this.state === 'lieDown' || this.state === 'lying' || this.state === 'getUp' || this.state === 'koro';
     // 倒れすぎたら、近い方の寝転び（腹ばい・仰向け）へそのまま移る。
     // 起き上がった直後（起き上がりきれずに傾いたまま立った）だけは、寝転びと起き上がりを繰り返さないよう立て直す
     this.riseGrace = Math.max(0, this.riseGrace - dt);
@@ -911,6 +956,17 @@ export class Locomotion {
           this.go('idle');
           break;
         }
+        act.orientation = this.poseCmd;
+        break;
+      }
+      case 'koro': {
+        // こーろこーろ：前へ koroLean だけ傾けた姿勢を、前向きの軸のまわりに koroAngle だけ回して、強く保って指令する
+        // （体が遅れて戻らないよう）
+        act.uprightMin = 1;
+        squashGoal = 0.95;
+        this._lq.setFromAxisAngle(this.koroLeanAxis, this.koroLean);
+        this._rq.setFromAxisAngle(this.koroAxis, this.koroAngle);
+        this.poseCmd.copy(this._rq).multiply(this._lq).multiply(this.koroStart);
         act.orientation = this.poseCmd;
         break;
       }

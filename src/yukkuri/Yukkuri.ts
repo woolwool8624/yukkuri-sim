@@ -24,6 +24,7 @@ import { Branch } from './branch';
 import { Forage } from './forage';
 import { NestStuff } from './nestStuff';
 import { NestBuild } from './nestBuild';
+import { Koro } from './koro';
 import { PushBox } from './box';
 import { Greet } from './greet';
 import { Death } from './death';
@@ -128,6 +129,8 @@ export class Yukkuri {
   readonly nestBuild: NestBuild;
   /** 段ボール箱（障害物。体ごと押して運ぶ。box.object をシーンに置いて表示する） */
   readonly box: PushBox;
+  /** こーろこーろ（宣言して横に転がって遊ぶ） */
+  readonly koro: Koro;
   /** あいさつ（動作の前の宣言と、挨拶） */
   readonly greet: Greet;
   /** 死ぬ（「もっとゆっくりしたかったよ…」の後）。死んでいく間と死んだ後は、ほかの動きを動かさない */
@@ -230,10 +233,12 @@ export class Yukkuri {
     this.nestStuff = new NestStuff(this);
     this.nestBuild = new NestBuild(this);
     this.box = new PushBox(this);
+    this.koro = new Koro(this);
     this.greet = new Greet(this);
     this.death = new Death(this);
     this.otabe = new Otabe(this);
     this.puku.usePreset(this.presetId);
+    this.koro.usePreset(this.presetId);
     this.peni = new Peni(this);
     this.peni.usePreset(this.presetId);
     this.root.add(this.peni.object);
@@ -303,6 +308,7 @@ export class Yukkuri {
     this.dropping.usePreset(p.id); // うんうんの出る位置も体型ごと
     this.moru.usePreset(p.id); // もるんもるんの揺れ幅も体型ごと
     this.puku.usePreset(p.id); // ぷくーの大きさも体型ごと
+    this.koro.usePreset(p.id); // こーろこーろの柔らかさも体型ごと
     this.locomotion.reset();
     this.applyShape();
     this.drop(0.02);
@@ -516,6 +522,7 @@ export class Yukkuri {
     this.branch.update(dt);
     this.forage.update(dt);
     this.box.update(dt); // 行き先を移動の処理より先に指示する
+    this.koro.update(dt); // こーろこーろ：姿勢の指令を移動の処理より先に決める（柔らかさは眠る・気絶の処理の後で上書き）
     this.dishEat.update(dt);
     this.toilet.update(dt); // といれへの行き先・身ぶりも移動の処理より先に指示する
     this.cleanup.update(dt);

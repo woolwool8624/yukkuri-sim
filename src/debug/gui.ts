@@ -113,6 +113,7 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
         y.dropping.copyExitTo(USER_PRESET_ID); // うんうんの出る位置も
         y.moru.copyFitTo(USER_PRESET_ID); // もるんもるんの揺れ幅・角度も
         y.puku.copyFitTo(USER_PRESET_ID); // ぷくーの大きさ・下ぶくれ具合も
+        y.koro.copyFitTo(USER_PRESET_ID); // こーろこーろの数値も
       }
       showInfo(presetState.id, ok ? `現在の値（${from}）をユーザー設定に上書きしました。` : '保存できませんでした（保存領域が使えません）。');
     });
@@ -130,6 +131,7 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
       y.dropping.resetExit();
       y.moru.resetFit();
       y.puku.resetFit();
+      y.koro.resetFit();
       applyPreset(presetState.id);
     });
   showInfo(y.presetId);
@@ -372,6 +374,25 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
     .onChange(() => { y.puku.save(); y.puku.refreshFace(); }));
   noLock(puku.add(y.puku.params, 'faceCamera').name('カメラの方を向く').onChange(() => y.puku.save()));
   const pukuTune = puku.addFolder('数値の調整').close();
+  // こーろこーろ：宣言して横に転がる（体から見て右・左）。転がり方・向き・時間・速さと、転がる間の柔らかさ（体型ごと）
+  const koro = gesture.addFolder('こーろこーろ');
+  const saveKoro = () => y.koro.save();
+  koro.add({ f: () => y.koro.declare() }, 'f').name('こーろこーろする');
+  noLock(koro.add(y.koro.params, 'pattern', { おまかせ: 'random', 一方向: 'one', 往復: 'shuttle', その場でゆらゆら: 'sway' }).name('転がり方').onChange(saveKoro));
+  noLock(koro.add(y.koro.params, 'dir', { ランダム: 'random', 右: 'right', 左: 'left' }).name('向き（体から見て）').onChange(saveKoro));
+  noLock(koro.add(y.koro.params, 'auto').name('自分から遊ぶ').onChange(saveKoro));
+  // 数値はどれも体型ごとに保存する
+  const koroTune = koro.addFolder('数値の調整（体型ごと）').close();
+  const fitKoro = () => y.koro.setFit();
+  noLock(koroTune.add(y.koro.params, 'time', 1, 30, 0.5).name('転がる時間(秒)').onChange(fitKoro));
+  noLock(koroTune.add(y.koro.params, 'speed', 0.1, 2, 0.05).name('回る速さ(回転/秒)').onChange(fitKoro));
+  noLock(koroTune.add(y.koro.params, 'turnEvery', 0.4, 6, 0.1).name('折り返す間隔(秒)').onChange(fitKoro));
+  noLock(koroTune.add(y.koro.params, 'swayWidth', 0.05, 1, 0.05).name('ゆらゆらの幅(回転)').onChange(fitKoro));
+  noLock(koroTune.add(y.koro.params, 'lean', 0, 80, 1).name('前傾(度)').onChange(fitKoro));
+  // 項目名が長いと数値の欄が画面の外へはみ出したので、まとまりの見出しで言い分ける
+  const koroSoft = koroTune.addFolder('転がる時の柔らかさ');
+  noLock(koroSoft.add(y.koro.params, 'soft', 0.05, 3, 0.05).name('形に戻る強さ(倍)').onChange(fitKoro));
+  noLock(koroSoft.add(y.koro.params, 'skin', 0.2, 20, 0.1).name('皮のゆるさ(倍)').onChange(fitKoro));
   noLock(pukuTune.add(y.puku.params, 'time', 2, 30, 0.5).name('ふくらんでいる時間(秒)').onChange(() => y.puku.save()));
   // 大きさと下ぶくれ具合は体型ごとに保存する（体型を切り替えるとその体型の値になるので、ロックは付けない）
   noLock(pukuTune.add(y.puku.params, 'size', 0.05, 0.6, 0.01).name('ふくらむ大きさ').onChange(() => y.puku.setFit()));
