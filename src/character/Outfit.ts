@@ -149,10 +149,13 @@ export class Outfit {
     }
     this.parts = this.character.create(this.ctx, this.params);
     for (const a of this.parts) this.object.add(a.object);
-    // 三つ編みの編み始めは帽子の外へ（帽子を表示しているときだけ）
+    // 三つ編みの編み始めは帽子の外へ、つばを突き抜けた所は隠す（帽子を表示しているときだけ）
     const hat = this.parts.find((a): a is WitchHat => a instanceof WitchHat);
     for (const a of this.parts) {
-      if (a instanceof Braid && hat) a.cover = (p) => this.params.showHat && hat.covers(p);
+      if (a instanceof Braid && hat) {
+        a.cover = (p) => this.params.showHat && hat.covers(p);
+        a.crossing = (p, q) => (this.params.showHat ? hat.brimCrossing(p, q) : 0);
+      }
     }
     this.rebuild();
   }
@@ -263,10 +266,11 @@ export class Outfit {
     readVertex(this.ctx.pos, this.ctx.nrm, i, pos, nrm);
   }
 
-  /** 描画の直前に呼ぶ（体の描画メッシュを更新した後）。still：立ち止まって落ち着いているか */
-  update(still = true): void {
+  /** 描画の直前に呼ぶ（体の描画メッシュを更新した後）。still：立ち止まって落ち着いているか。rolling：こーろこーろで転がっているか */
+  update(still = true, rolling = false): void {
     if (this.parts.length === 0) return;
     this.ctx.still = still;
+    this.ctx.rolling = rolling;
     this.refreshArrays();
     // 帽子を先に（三つ編みが帽子の今の位置を見るので）
     for (const a of this.parts) if (a instanceof WitchHat) a.update(this.ctx);

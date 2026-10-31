@@ -586,7 +586,7 @@ export class Yukkuri {
     }
     // 立ち止まって落ち着いたかを渡す（三つ編みの編み目の数・ぺにぺにの生やす所は、動いている間は選び直さない）
     const still = this.locomotion.idleTime > STILL_TIME;
-    this.outfit.update(still);
+    this.outfit.update(still, this.koro.rolling);
     this.branch.sync(); // 三つ編みの毛先が決まった後で
     this.box.sync(); // 帽子を箱からよけて傾ける（つばの上の餌より先に）
     this.ball.sync();

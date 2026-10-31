@@ -120,6 +120,11 @@ export class Koro {
     return this.phase !== 'none';
   }
 
+  /** 転がっているか（転がり始めてから体を起こし終えるまで。起き上がって笑っている間は含まない） */
+  get rolling(): boolean {
+    return this.phase === 'roll' || this.phase === 'finish' || this.phase === 'unlean';
+  }
+
   private pickSaved(): Partial<KoroParams> {
     const s = this.saved;
     if (!s) return {};

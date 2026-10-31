@@ -25,6 +25,8 @@ export interface AttachContext {
   index: FaceIndex;
   /** 立ち止まって落ち着いているか（false のときは、動きで変わる長さから数などを決め直さない）。未設定は true 扱い */
   still?: boolean;
+  /** こーろこーろで転がっているか（帽子は根元を太らせずに帽子ごと浮かせて頭をよける）。未設定は false 扱い */
+  rolling?: boolean;
   /** 体の塗り（光の向きなどを共有する） */
   bodyMaterial: THREE.ShaderMaterial;
   /** 輪郭線の材質（共有。画面上で一定の太さ） */

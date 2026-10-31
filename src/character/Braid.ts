@@ -50,6 +50,17 @@ const COVER_CLEAR = 0.55;
 const TRIM_FOLLOW = 0.25;
 /** 帽子に隠れる所を除いても、これだけ（道筋の点の数）は残す */
 const MIN_PATH = 3;
+/**
+ * つばを突き抜けたかを調べる所（各部品の形の座標。z が体の外向き）：編み目・リボン・房。
+ * 先頭は部品の中心、残りはふくらみの頂と上下の端（中心からそこまでがつばを通り抜けたら、その部品は突き抜けている）。
+ * 左右の端は見ない（見ると、横から見た薄いつばのそばで端がつばをかすめただけで部品ごと消え、転がる間に出たり消えたりした）。
+ * リボンは隠さないので中心だけ（通り抜けたかを数えるのに使う）
+ */
+const LOBE_PROBE: [number, number, number][] = [[0, 0, 0], [0, 0.08, 0.14], [0, -0.55, 0.03], [0, 0.33, 0.05]];
+const BOW_PROBE: [number, number, number][] = [[0, 0.05, 0]];
+const TUFT_PROBE: [number, number, number][] = [[0, -0.4, 0], [0, -0.3, 0.28], [0, -0.95, 0.1], [0, 0, 0.17]];
+/** つばを通り抜けた先の部品の下につばがあるかは、中心から体の側へこれだけ（形の座標。部品の幅ほど）の所までで見る */
+const SINK = 1;
 
 /**
  * 道筋の先頭から、帽子に隠れる所（cover が true）と、そこからさらに道筋に沿って clear の長さを除くとしたら、
@@ -226,6 +237,11 @@ export class Braid implements Accessory {
   private trimmed = -1;
   /** 点が帽子に隠れているか（帽子をかぶっているとき Outfit が設定する）。編み始めを帽子の外へ出すのに使う */
   cover: ((p: THREE.Vector3) => boolean) | null = null;
+  /**
+   * 線分が帽子のつばの上面を下（頭の側）から上へ通り抜けた回数（逆向きは負。帽子をかぶっているとき Outfit が設定する）。
+   * つばを突き抜けた所から先の部品を隠すのに使う
+   */
+  crossing: ((p: THREE.Vector3, q: THREE.Vector3) => number) | null = null;
   /**
    * 物をつかむ所（毛先の房の中ほど）と、そこでの向き：down は三つ編みの垂れる向き、side は横、front は体の外向き。
    * 三つ編みを簡易的な手として使う（枝を持つなど）。update のたびに書き換える。ready は一度でも置けたか
@@ -483,6 +499,42 @@ export class Braid implements Accessory {
         const max = R * REACH_FIX_MAX;
         if (this.reachFix.length() > max) this.reachFix.setLength(max);
       } else this.reachFix.set(0, 0, 0);
+    }
+    this.hideThroughBrim(pts[0]);
+  }
+
+  /**
+   * 帽子のつばを突き抜けた編み目と房を隠す。こーろこーろの転がり始めなどで帽子が顔の側へ倒れ、つばを垂らすと、
+   * 頭の上の房やリボンをつばが貫いて、つばの上に黄色や白のかけらが出た（つばは頭だけをよける）。
+   * 付け根（root。つばの下）から部品の中心を順にたどり、つばの上面を下から上へ通り抜けた所から先でつばの上に乗っている部品と、
+   * 中心はつばの下でもふくらみや上下の端がつばの上に出ている部品を隠す。そこは本来つばにかぶさられて見えない所。
+   * 縁を回り込む・縁の下をくぐって地面に出た三つ編みはつばの面を通らないので、そのまま見える。
+   * 地面へ垂れたつばの縁を乗り越えて地面に出た所も見せる（隠すと、転がる間に縁の外の毛先が出たり消えたりした）
+   */
+  private hideThroughBrim(root: THREE.Vector3): void {
+    const cross = this.crossing;
+    const parts: [THREE.Object3D, [number, number, number][]][] = [];
+    for (const g of this.lobes) if (g.visible) parts.push([g, LOBE_PROBE]);
+    parts.push([this.bow, BOW_PROBE], [this.tuft, TUFT_PROBE]);
+    if (!cross) {
+      this.bow.visible = this.tuft.visible = true;
+      return;
+    }
+    let side = 0;
+    let prev = root;
+    for (const [obj, probe] of parts) {
+      obj.updateMatrix();
+      const at = (p: [number, number, number]) => new THREE.Vector3(...p).applyMatrix4(obj.matrix);
+      // 先頭は部品の中心
+      const center = at(probe[0]);
+      side += cross(prev, center);
+      prev = center;
+      // 通り抜けた先でも、すぐ下（体の側）につばがなければ縁の外（地面へ垂れたつばの縁を越えて地面に出た所）なので見せる
+      const [cx, cy] = probe[0];
+      const onBrim = side > 0 && cross(center, at([cx, cy, -SINK])) < 0;
+      // リボンは隠さない（地面へ垂れたつばの端に乗ると「通り抜けた先」になり、隠すと転がる間に出たり消えたりした。
+      // 羽の先が少しつばの上に出る方が目立たない）。通り抜けたかを数えるのには使う
+      obj.visible = obj === this.bow || (!onBrim && !probe.slice(1).some((p) => cross(center, at(p)) > 0));
     }
   }
 

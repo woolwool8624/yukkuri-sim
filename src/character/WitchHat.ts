@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createAccessoryMaterial } from '../render/accessoryMaterial';
 import type { ToonColors } from '../render/toonMaterial';
-import { GROUND_BRIM, GROUND_CROWN, GROUND_FRILL } from '../render/ground';
+import { GROUND_BRIM, GROUND_CROWN, GROUND_FRILL, GROUND_FRILL_LOW } from '../render/ground';
 import { readVertex } from './FaceIndex';
 import { bowGeometries, lathe, tubeAlong, withOutline } from './shapes';
 import type { Accessory, AttachContext, OutfitParams } from './types';
@@ -53,7 +53,13 @@ export class WitchHat implements Accessory {
   /** つば（寝転がって折れているときは頭の外へ押し出す） */
   private brimGeometry: THREE.BufferGeometry | null = null;
   private brimBase = new Float32Array(0);
+  /** つばの上面の三角形（頂点の番号を 3 つずつ。表の向きが円錐の側になる順に並べ直したもの）。brimCrossing で使う */
+  private brimTopTris = new Uint32Array(0);
   private crownPush: Float32Array = new Float32Array(CROWN_N + 1);
+  /** こーろこーろ・折れる直前の crownPush（その間はこれより太らせない。holding） */
+  private heldPush = new Float32Array(CROWN_N + 1);
+  /** 今の持ち上げは holding の間に浮かせた分か（下ろす速さを HELD_DROP 倍に） */
+  private heldLift = false;
   /** 太らせる量が変わって、円錐を置き直す必要がある */
   private crownDirty = true;
   /** 前のフレームで円錐を地面で折り曲げていた */
@@ -103,6 +109,16 @@ export class WitchHat implements Accessory {
   private readonly crownLines: THREE.Object3D[] = [];
   /** 裏地のおわん（外している間だけ出す） */
   private dome: THREE.Mesh | null = null;
+  /**
+   * 帽子が上を向いているか（つばの上面が空の側）。地面に押し付けられたときの、つばの上面と下面・フリルの重ね順を決める
+   * （寝転がったときは逆さま＝上面が地面の側。深く前へ傾くと上を向いたまま押し付けられる）。境目でちらつかないよう幅を持たせる
+   */
+  private upright = true;
+  /** フリル（上を向いているときと逆さまのときで、地面で止める高さの違う材質を差し替える） */
+  private frillMesh: THREE.Mesh | null = null;
+  private frillMats: [THREE.Material, THREE.Material] | null = null;
+  /** 円錐・帯・リボンの材質（上を向いているときと逆さまのときで、地面で止める高さを変える） */
+  private crownMats: THREE.ShaderMaterial[] = [];
   /** local3 の各点の法線（帽子の座標） */
   private localN = new Float32Array(0);
 
@@ -126,6 +142,7 @@ export class WitchHat implements Accessory {
     // 帯のリボン：帯と同じ高さで止める（ほかの飾りと同じ高さだと、逆さまに押しつぶされたとき、つばより上に出て突き抜けて見える）
     const trimBoth = createAccessoryMaterial(ctx.bodyMaterial, st.trim, { doubleSide: true, ground: GROUND_CROWN });
     this.materials.push(clothBoth, trim, trimBoth);
+    this.crownMats = [crownCloth, trim, trimBoth];
     const ol = ctx.outlineMaterial;
     const add = (g: THREE.BufferGeometry, m: THREE.Material, outline = true) => {
       this.geometries.push(g);
@@ -147,10 +164,19 @@ export class WitchHat implements Accessory {
     // 輪郭線は白い裏地の所には引かない（逆さに置いたとき、口の内側の縁の線がおわんの上に弧になって見えた）
     const noLine = new THREE.MeshBasicMaterial({ visible: false });
     this.materials.push(noLine);
+    // つばの布は自分の輪郭線よりわずかに手前に描く（地面へ垂らしたつばは上面と下面がほとんど重なり、
+    // 下面の輪郭線（裏の面を描く）が上面とちらついて、つばの上に黒いぎざぎざが見えた。こーろこーろの深い前傾）。
+    // 外周の輪郭線は布の外にはみ出した所なので消えない
+    for (const m of [clothBoth, brimLining]) {
+      m.polygonOffset = true;
+      m.polygonOffsetFactor = BRIM_OFFSET[0];
+      m.polygonOffsetUnits = BRIM_OFFSET[1];
+    }
     const brimGroup = new THREE.Group();
     brimGroup.add(new THREE.Mesh(brim, [ol, noLine]), new THREE.Mesh(brim, [clothBoth, brimLining]));
     this.hat.add(brimGroup);
     this.brimBase = Float32Array.from(brim.getAttribute('position').array as Float32Array);
+    this.brimTopTris = topTriangles(brim, BRIM_PROFILE, BRIM_TOP_LAST);
     this.brimGeometry = brim;
 
     // 円錐：先は後ろ（bendAngle の向き）へ折れて垂れる
@@ -177,10 +203,11 @@ export class WitchHat implements Accessory {
 
     // 帯（白）：円錐の根元
     const bandT = (i: number) => 0.02 + (i / 6) * 0.1;
-    const band = tubeAlong((t) => curve(0.02 + t * 0.1), (t, a) => crownBase(0.02 + t * 0.1, a) * 1.035, 6, 56);
+    const band = tubeAlong((t) => curve(0.02 + t * 0.1), (t, a) => crownBase(0.02 + t * 0.1, a) * 1.035, BAND_SEG, BAND_RING - 1);
+    evenBand(band, BAND_SEG, BAND_RING);
     add(band, trim);
     this.crownLines.push(this.hat.children[this.hat.children.length - 1].children[0]);
-    this.crownParts.push(new Swell(band, 6, 57, bandT, curve, 1.035));
+    this.crownParts.push(new Swell(band, BAND_SEG, BAND_RING, bandT, curve, 1.035));
 
     // 正面のリボン：帯の上、円錐の表面から外へ
     const bowA = (st.bowAngle * Math.PI) / 180;
@@ -224,10 +251,14 @@ export class WitchHat implements Accessory {
     // つばの下のフリル：頭のまわりに垂れる波打った布
     if (st.frill) {
       this.frill = new Frill(this.brimTop, B);
-      // 寝転がったとき、フリルはつばの頭側（上）にあるので、地面に垂らしたつばより上で止める
+      // 寝転がった（逆さま）とき、フリルはつばの頭側（上）にあるので、地面に垂らしたつばより上で止める。
+      // 上を向いたまま押し付けられたときは、つばの地面の側にあるので、つばより下で止める
       const frillMat = createAccessoryMaterial(ctx.bodyMaterial, st.trim, { doubleSide: true, ground: GROUND_FRILL });
-      this.materials.push(frillMat);
+      const frillLow = createAccessoryMaterial(ctx.bodyMaterial, st.trim, { doubleSide: true, ground: GROUND_FRILL_LOW });
+      this.materials.push(frillMat, frillLow);
       add(this.frill.geometry, frillMat, false);
+      this.frillMesh = this.hat.children[this.hat.children.length - 1].children[0] as THREE.Mesh;
+      this.frillMats = [frillLow, frillMat];
     }
   }
 
@@ -276,7 +307,21 @@ export class WitchHat implements Accessory {
       this.localN[3 * j + 2] = nz / l;
     }
     const push = crownPush(pts, n, this.crownCurve());
-    this.follow(push);
+    // こーろこーろの間と地面で折れている間は、根元をその直前より太らせない（転がるたびに頭が根元に食い込み、根元が一瞬で
+    // 1.2〜1.26 倍に太って帯ごと外へ動いて見えた）。止めた分は帽子ごと頭から離して逃がす（follow）
+    let held: number | null = null;
+    if (this.holding(ctx)) {
+      held = 0;
+      const raw = push.slice();
+      for (let k = 0; k <= CROWN_N; k++) {
+        push[k] = Math.min(push[k], this.heldPush[k]);
+        if (k <= SEAT_ROWS) held = Math.max(held, push[k]);
+      }
+      this.follow(raw, held);
+    } else {
+      this.heldPush.set(push);
+      this.follow(push, null);
+    }
     this.frill?.fit(pts, n);
     let change = 0;
     for (let k = 0; k <= CROWN_N; k++) change = Math.max(change, Math.abs(push[k] - this.crownPush[k]));
@@ -285,32 +330,45 @@ export class WitchHat implements Accessory {
     this.crownDirty = true;
   }
 
+  /** 根元を太らせるのを止め、頭の食い込みを帽子ごと浮かせてよける間か（こーろこーろの途中・地面で折れている） */
+  private holding(ctx: AttachContext): boolean {
+    return this.folded || ctx.rolling === true;
+  }
+
   /**
    * 動いて頭が帽子に食い込んだら、帽子を持ち上げる量 lift を増やす（次のフレームから効く）。
    * 食い込んでいなければゆっくり戻す。食い込みは円錐の根元を太らせる量で測り、
-   * かぶったときの量（basePush）より LIFT_SLACK 以上増えた分を食い込みとみなす。寝転がって折れているときは持ち上げない
+   * かぶったときの量（basePush）より LIFT_SLACK 以上増えた分を食い込みとみなす。
+   * 根元を太らせない間（holding）は、止めた量 held を越えた分を全部食い込みとみなす（帯を動かさずに頭を隠す）
    */
-  private follow(push: Float32Array): void {
+  private follow(push: Float32Array, held: number | null): void {
     let m = 0;
     for (let k = 0; k <= SEAT_ROWS; k++) m = Math.max(m, push[k]);
     if (this.basePush < 0) this.basePush = m;
-    const over = m - Math.max(this.basePush, SEAT_ALLOW) - LIFT_SLACK;
+    const over = held !== null ? m - held - HOLD_LIFT_SLACK : m - Math.max(this.basePush, SEAT_ALLOW) - LIFT_SLACK;
     // 食い込みは今の lift で測っているので、持ち上げたい量は今の lift からの上乗せ（追いつく途中で積み増さない）
-    if (this.folded) this.liftGoal = Math.max(0, this.liftGoal - LIFT_DROP * 4);
-    else if (over > 0) this.liftGoal = Math.min(LIFT_MAX, Math.max(this.liftGoal, this.lift + over * LIFT_GAIN));
-    else if (over < -LIFT_SLACK && !this.holdLift) this.liftGoal = Math.max(0, this.liftGoal - LIFT_DROP);
+    if (over > 0) this.liftGoal = Math.min(LIFT_MAX, Math.max(this.liftGoal, this.lift + over * LIFT_GAIN));
+    else if (over < -LIFT_SLACK && !this.holdLift) {
+      // 転がり終えた後は早めに下ろす（転がる間に浮かせた分が残り、いもむし型で頭から 0.5 浮いたまま 2 秒かけて下りてきた）
+      this.liftGoal = Math.max(0, this.liftGoal - LIFT_DROP * (this.heldLift ? HELD_DROP : 1));
+    }
+    if (held !== null) this.heldLift = this.liftGoal > 0;
+    else if (this.liftGoal === 0) this.heldLift = false;
   }
 
   /**
    * 折れた円錐がつばを抜けて頭の側（つばより下、フリルのある側）へ出ないよう、
-   * つばの外周より内側の頂点をつばの上面の上へ押し上げる（つばと地面の間でつぶれる）
+   * つばの外周より内側の頂点をつばの上面の上へ押し上げる（つばと地面の間でつぶれる）。
+   * base（元の形）でつばの上面に近かった所は、元のつばからの高さまでしか押し上げない
+   * （帯の下側やリボンの下半分まで一律に押し上げると、円錐が折れた途端に帯が細くなり、リボンが縮んで細かいひだになった）
    */
-  private keepAboveBrim(a: Float32Array, extra: number): void {
+  private keepAboveBrim(a: Float32Array, extra: number, base: Float32Array): void {
     const R = this.brimR * BRIM_COVER;
     for (let v = 0; v < a.length; v += 3) {
       const r = Math.hypot(a[v], a[v + 2]);
       if (r > R) continue;
-      const floor = this.brimTop(r) + FOLD_BRIM_CLEAR + extra;
+      const rest = Math.max(0, base[v + 1] - this.brimTop(Math.hypot(base[v], base[v + 2])));
+      const floor = this.brimTop(r) + Math.min(FOLD_BRIM_CLEAR + extra, rest);
       if (a[v + 1] < floor) a[v + 1] = floor;
     }
   }
@@ -321,9 +379,12 @@ export class WitchHat implements Accessory {
    * 地面から DRAPE_HEIGHT より高い所は垂らさない（上側のつばは元の形）
    */
   private drapeBrim(a: Float32Array, amount = 1): void {
-    // 上面（円錐の側。寝転がると地面を向く）は地面まで、下面はつばの厚みだけ上で止める
-    // （同じ高さに重なるとちらつく）
-    this.drape(a, (j) => (j <= BRIM_TOP_LAST || j === BRIM_PROFILE - 1 ? DRAPE_CLEAR : DRAPE_CLEAR + DRAPE_THICK), BRIM_PROFILE, amount);
+    // 地面の側の面は地面まで、空の側の面はつばの厚みだけ上で止める（同じ高さに重なるとちらつく）。
+    // 寝転がった（逆さま）ときは上面（円錐の側）が地面の側。上を向いたまま押し付けられたとき（深く前へ傾く）は下面が地面の側
+    // （逆さまと決めて重ねると、下面とその輪郭線が上に出て、つばの上に黒いぎざぎざが見えた）
+    const low = DRAPE_CLEAR, high = DRAPE_CLEAR + DRAPE_THICK;
+    const top = this.upright ? high : low, bottom = this.upright ? low : high;
+    this.drape(a, (j) => (j <= BRIM_TOP_LAST || j === BRIM_PROFILE - 1 ? top : bottom), BRIM_PROFILE, amount);
   }
 
   /**
@@ -393,7 +454,12 @@ export class WitchHat implements Accessory {
   private pushAt(t: number): number {
     const push = this.crownPush;
     const f = Math.min(1, Math.max(0, t)) * CROWN_N, k = Math.min(CROWN_N - 1, Math.floor(f)), w = f - k;
-    return Math.max(0, push[k] * (1 - w) + push[k + 1] * w);
+    const at = Math.max(0, push[k] * (1 - w) + push[k + 1] * w);
+    // 帯のかかる付け根（CROWN_EVEN まで）は、その中で一番大きい量で一様に広げ、その先でなめらかに元の量へ戻す。
+    // 段ごとに違う量で広げると、頭に押された下の縁ほど外へ出て帯がスカートのように開き、幅が 1.5 倍に見えた
+    let base = 0;
+    for (let j = 0; j <= Math.ceil(CROWN_EVEN * CROWN_N); j++) base = Math.max(base, push[j]);
+    return Math.max(at, base * (1 - THREE.MathUtils.smoothstep(t, CROWN_EVEN, CROWN_EVEN + 0.12)));
   }
 
   /**
@@ -423,7 +489,8 @@ export class WitchHat implements Accessory {
     }
     if (first < 0) return null;
     // 寝かせる向き：当たった所の中心線の向きを地面に沿わせたもの
-    const i0 = Math.max(0, first - 1);
+    // 曲げ始めるのは付け根の帯より先から（帯の所で曲げると、回さない断面の中心だけがずれて、帯の内側が縮み外側が伸びた）
+    const i0 = Math.max(Math.ceil(FOLD_KEEP * N), first - 1);
     const tan = c[Math.min(N, i0 + 1)].clone().sub(c[i0]).normalize();
     const along = tan.clone().addScaledVector(upL, -tan.dot(upL));
     if (along.lengthSq() < 1e-6) {
@@ -659,6 +726,41 @@ export class WitchHat implements Accessory {
     return v.y > hem - margin;
   }
 
+  /**
+   * 線分 p→q（体と同じ座標）が、つばの上面（今の形。垂らしていれば垂らした形）を通り抜けた向きの和：
+   * 下（頭の側）から上（円錐の側）へ通るたびに +1、逆は -1。かぶっていないとき（外して持っている）は 0。
+   * 三つ編みが頭の側からつばを突き抜けたかを見るのに使う（縁を回り込む・縁の下をくぐるときは面を通らないので数えない）
+   */
+  brimCrossing(p: THREE.Vector3, q: THREE.Vector3): number {
+    if (!this.object.visible || this.carry || !this.brimGeometry) return 0;
+    const o = p.clone().applyMatrix4(this.inverse);
+    const d = q.clone().applyMatrix4(this.inverse).sub(o);
+    const a = this.brimGeometry.getAttribute('position').array as Float32Array;
+    const T = this.brimTopTris;
+    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), h = new THREE.Vector3(), s = new THREE.Vector3(), r = new THREE.Vector3();
+    let sum = 0;
+    for (let t = 0; t < T.length; t += 3) {
+      const i = 3 * T[t], j = 3 * T[t + 1], k = 3 * T[t + 2];
+      // 線分と三角形の交わり（Möller–Trumbore）。u, v は三角形の中の位置、w は線分の上の位置（0〜1）
+      e1.set(a[j] - a[i], a[j + 1] - a[i + 1], a[j + 2] - a[i + 2]);
+      e2.set(a[k] - a[i], a[k + 1] - a[i + 1], a[k + 2] - a[i + 2]);
+      h.crossVectors(d, e2);
+      const det = e1.dot(h);
+      if (Math.abs(det) < 1e-12) continue;
+      s.set(o.x - a[i], o.y - a[i + 1], o.z - a[i + 2]);
+      const u = s.dot(h) / det;
+      if (u < 0 || u > 1) continue;
+      r.crossVectors(s, e1);
+      const v = d.dot(r) / det;
+      if (v < 0 || u + v > 1) continue;
+      const w = e2.dot(r) / det;
+      if (w < 0 || w > 1) continue;
+      // 表（上）の向きは e1 × e2。線分がそれと同じ向きなら下から上へ
+      sum += d.dot(h.crossVectors(e1, e2)) > 0 ? 1 : -1;
+    }
+    return sum;
+  }
+
   update(ctx: AttachContext): void {
     if (this.reseatIn > 0 && --this.reseatIn === 0) {
       this.reseating = true;
@@ -674,7 +776,9 @@ export class WitchHat implements Accessory {
     // 帽子は形を変えずに頭について行く（体の幅に合わせて広げたり縮めたりすると、跳ねるたびに伸び縮みして見える）。
     // 頭が帽子に食い込んだ分は、円錐を太らせる代わりに帽子ごと持ち上げる（lift）
     // 持ち上げは数コマかけて追いつく。下ろすのは持ち上げたい量がもともとゆっくり減るのでそのまま
-    this.lift = this.liftGoal > this.lift ? this.lift + (this.liftGoal - this.lift) * LIFT_RISE : this.liftGoal;
+    // 根元を太らせない間はすぐ追いつく（遅れた分だけ頭が帯の外に出て見える）
+    const rise = this.holding(ctx) ? 1 : LIFT_RISE;
+    this.lift = this.liftGoal > this.lift ? this.lift + (this.liftGoal - this.lift) * rise : this.liftGoal;
     const cur = frameOf(p[0], p[1], p[2], p[3]);
     this.worn.copy(cur).multiply(this.restInv).multiply(this.local)
       .multiply(new THREE.Matrix4().makeTranslation(0, this.lift, 0));
@@ -683,6 +787,21 @@ export class WitchHat implements Accessory {
     else this.object.matrix.copy(this.worn);
     this.object.matrixWorldNeedsUpdate = true;
     this.inverse.copy(this.object.matrix).invert();
+    // 上を向いているか（帽子の上向きのワールドの高さの成分。境目に幅を持たせる）
+    const upY = this.object.matrix.elements[5] / Math.hypot(this.object.matrix.elements[4], this.object.matrix.elements[5], this.object.matrix.elements[6]);
+    const upright = this.upright ? upY > UPRIGHT_OFF : upY > UPRIGHT_ON;
+    if (upright !== this.upright) {
+      this.upright = upright;
+      // つばの重ね順が変わるので作り直す
+      this.crownDirty = true;
+    }
+    if (this.frillMesh && this.frillMats) this.frillMesh.material = this.frillMats[upright ? 0 : 1];
+    // 円錐・帯・リボン：逆さまのときはつばより地面の側（GROUND_CROWN）。上を向いたまま押し付けられたとき（深く前へ傾く）は、
+    // 垂らしたつばの上面より上に、円錐・帯・リボンの順に重ねる（地面の側で止めると、地面の近くだけ帯がつばの下に潜り、
+    // 帯の幅が急に細く見えた。形を持ち上げると輪郭線も一緒に持ち上がって布と重なり、ぎざぎざになった）
+    this.crownMats.forEach((m, k) => {
+      m.uniforms.uGround.value = upright ? GROUND_BRIM + DRAPE_CLEAR + DRAPE_THICK + DRAPE_OVER + k * DRAPE_LAYER : GROUND_CROWN;
+    });
     if (this.dome) this.dome.visible = this.carry !== null && this.lined;
     // 外している間は円錐と帯の輪郭線を描かない（逆さに置くと、口の真ん中に輪郭線の色の穴が見える角度があった。
     // 輪郭線は面の裏を描くので、口の側から見える円錐の内側に出る）
@@ -716,21 +835,31 @@ export class WitchHat implements Accessory {
         this.crownParts.forEach((part, k) => {
           // 帯（外側の布）はつばの側、円錐はその内側に重ねる（同じ高さだと重なってちらつく）
           const layer = k === 0 ? FOLD_LAYER : 0;
-          part.apply((t) => this.pushAt(t), fold, fold ? (a) => {
+          const post = fold ? (a: Float32Array, base: Float32Array) => {
             grid?.pushOut(a, BODY_CLEAR);
-            this.keepAboveBrim(a, layer);
-            // 円錐と帯もつばと一緒に垂らす（つばより地面の側で止める）。垂らしたつばを越えると、
-            // 頭の側から円錐の布の縁が白っぽい線として見える
-            this.drape(a, () => DRAPE_UNDER);
-          } : squash);
+            this.keepAboveBrim(a, layer, base);
+            // 逆さまのときは円錐と帯もつばと一緒に垂らす（つばより地面の側で止める）。垂らしたつばを越えると、
+            // 頭の側から円錐の布の縁が白っぽい線として見える。上を向いているときは描くときにつばより上で止める（crownMats）
+            if (!this.upright) this.drape(a, () => DRAPE_UNDER);
+          } : squash;
+          // 帯（k = 1）は折れる所より付け根の側にあるので、折れていないときと同じに扱う（地面の側をつぶす・
+          // 頭の外へ押し出す・つばの上へ押し上げるを帯の頂点ごとにかけると、帯の下の縁だけ持ち上がって幅が 1/2〜1/3 に縮んだ）。
+          // 逆さまで折れているときだけは、つばと一緒に垂らす（垂らさないと、垂らしたつばを突き抜ける）
+          if (k === 1) {
+            part.apply((t) => this.pushAt(t), null, fold && !this.upright ? (a) => {
+              squash?.(a);
+              this.drape(a, () => DRAPE_UNDER);
+            } : squash);
+          }
+          else part.apply((t) => this.pushAt(t), fold, post);
         });
         // 折れているときは円錐の表面について行く。普段は元の形のまま、円錐が太った分だけ外へ
         const shift = this.bowDir.clone().multiplyScalar(this.pushAt(0.08) * 0.98);
         // 帯と同じく、つばの円錐の側に保ち、つばと一緒に垂らす（帽子が逆さまに押しつぶされたときも、つばを突き抜けない）
         for (const f of this.bowFollow) {
-          f.apply(fold !== null || this.crush > 0, shift, fold ? (a) => {
-            this.keepAboveBrim(a, FOLD_LAYER);
-            this.drape(a, () => DRAPE_UNDER);
+          f.apply(fold !== null || this.crush > 0, shift, fold ? (a, base) => {
+            this.keepAboveBrim(a, FOLD_LAYER, base);
+            if (!this.upright) this.drape(a, () => DRAPE_UNDER);
           } : undefined);
         }
         // つば：折れているときは頭（髪）にめり込む所を外へ押し出す。普段は元の形
@@ -744,6 +873,18 @@ export class WitchHat implements Accessory {
           p.needsUpdate = true;
           this.brimGeometry.computeVertexNormals();
           this.brimGeometry.computeBoundingSphere();
+        }
+        // フリル：上を向いたまま押し付けられたとき（深く前へ傾く）は、つばの地面の側にあるので、つばと同じ垂らし方で寄せる
+        // （同じ半径なら寄せる割合が同じなので、つばより地面の側に保たれる）。寄せないと、頭をよけて外へ広がったフリルが
+        // 地面へ垂らしたつばを突き抜けて、つばの上に白く出た。逆さまのときはつばの頭の側にあるので寄せない（今までどおり）
+        if (this.frill && this.upright && (fold || dip > 0)) {
+          const p = this.frill.geometry.getAttribute('position') as THREE.BufferAttribute;
+          this.drape(p.array as Float32Array, () => DRAPE_UNDER, 1, fold ? 1 : dip);
+          p.needsUpdate = true;
+          this.frill.geometry.computeVertexNormals();
+          this.frill.geometry.computeBoundingSphere();
+          // 次は元の形から置き直させる（寄せなくなった回で元の形に戻る）
+          this.frill.invalidate();
         }
         // 垂らしたつばを元へ戻すため、次も作り直す（垂らす量が 0 になった回で元の形に戻る）
         this.folded = fold !== null || dip > 0;
@@ -790,6 +931,10 @@ const LIFT_DROP = 0.004;
 const LIFT_MAX = 1.5;
 /** 持ち上げたい量へ、update 1回に縮める差の割合 */
 const LIFT_RISE = 0.3;
+/** 根元を太らせない間（holding）：止めた量をこれだけ越えたら持ち上げる（帽子の単位。小さいほど頭が出ない） */
+const HOLD_LIFT_SLACK = 0.005;
+/** holding の間に浮かせた分を、その後に下ろす速さ（LIFT_DROP の倍数） */
+const HELD_DROP = 4;
 
 /** 体型を変えてから、落ち着いた形で置き直すまでの update の回数 */
 const RESEAT_FRAMES = 45;
@@ -899,11 +1044,26 @@ const CRUSH_BULGE = 0.12;
 const DOME_PROFILE: [number, number][] = [
   [0, 0.22], [0.35, 0.21], [0.65, 0.17], [0.88, 0.09], [1.0, 0.0], [1.05, -0.1], [1.24, -0.12],
 ];
-/** 垂らしたつばを止める高さ：上面は地面から DRAPE_CLEAR、下面はさらに DRAPE_THICK 上（ワールド） */
+/** つばの布を輪郭線より手前に描くずらし（polygonOffset の factor・units） */
+const BRIM_OFFSET = [-2, -16] as const;
+/** 垂らしたつばを止める高さ：地面の側の面は地面から DRAPE_CLEAR、空の側の面はさらに DRAPE_THICK 上（ワールド） */
 const DRAPE_CLEAR = 0.002;
 const DRAPE_THICK = 0.012;
+/**
+ * 帽子が上を向いているか・逆さまかを切り替える境目（上向きのワールドの高さの成分）。下回ったら逆さま、上回ったら上向きに戻す。
+ * 逆さまにするのは、はっきり下を向いたときだけ（仰向けで -1 近く）。こーろこーろでは -0.4〜0.4 くらいを行き来するので、
+ * 境目が 0 の近くだと転がるたびに重ね順が入れ替わり、地面の近くで帯の幅が急に変わって見えた
+ */
+const UPRIGHT_OFF = -0.55;
+const UPRIGHT_ON = -0.35;
 /** 垂らしたつばと一緒に寄せる円錐・帯・リボンを止める高さ（ワールド。つばの上面より地面の側） */
 const DRAPE_UNDER = -0.001;
+/**
+ * 上を向いたまま押し付けられたとき：円錐・帯・リボンを、垂らしたつばの上面からこれだけ上で止める（描くとき）。
+ * 重ねる順（円錐・帯・リボン）ごとにさらに DRAPE_LAYER ずつ上（ワールド。同じ高さだと重なってちらつく）
+ */
+const DRAPE_OVER = 0.003;
+const DRAPE_LAYER = 0.002;
 /** 同じく、地面からこの高さ（ワールド）より低い所だけ垂らす */
 const DRAPE_HEIGHT = 0.6;
 /** 円錐が当たらずにつばの縁だけ床に近づいたとき：縁が床からこの高さ（ワールド）より下がったら垂らし始め、さらにこれだけ下がるまでに全部垂らす */
@@ -955,10 +1115,68 @@ function crownBase(t: number, a: number): number {
 }
 const CROWN_WAVE = 0.025;
 
+/** 円錐の付け根のここ（中心線の割合）までは、頭に合わせて広げる量をそろえる（帯の上の縁 0.12 より少し先まで） */
+const CROWN_EVEN = 0.13;
+/** 帯の高さより下では、円錐の根元（波の一番内側）からこれより外の点を見ない（つばの上にあり、つばが隠す） */
+const FOOT_REACH = 0.12;
+/** 帯の段の数と、1 周の頂点の数（継ぎ目で 1 つ重なる） */
+const BAND_SEG = 6;
+const BAND_RING = 57;
+
+/**
+ * 帯の幅をどこも同じにする。帯は少し後ろへ曲がった円錐の中心線に沿って作るので、断面が平行でなく、
+ * 曲がる外側は広く内側は狭かった（前と後ろで 1.5 倍）。列ごとに下の縁から上の縁への向きはそのままに、平均の幅で並べ直す
+ */
+function evenBand(g: THREE.BufferGeometry, segments: number, ring: number): void {
+  const p = g.getAttribute('position') as THREE.BufferAttribute;
+  const a = p.array as Float32Array;
+  const top = segments * ring;
+  let W = 0;
+  for (let j = 0; j < ring; j++) {
+    W += Math.hypot(a[3 * (top + j)] - a[3 * j], a[3 * (top + j) + 1] - a[3 * j + 1], a[3 * (top + j) + 2] - a[3 * j + 2]);
+  }
+  W /= ring;
+  for (let j = 0; j < ring; j++) {
+    const b = 3 * j;
+    // 中ほどの段を基準に、上下へ同じだけ伸び縮みさせる（帯の高さの真ん中は元のまま）
+    const m = 3 * ((segments >> 1) * ring + j);
+    const d = new THREE.Vector3(a[3 * (top + j)] - a[b], a[3 * (top + j) + 1] - a[b + 1], a[3 * (top + j) + 2] - a[b + 2]);
+    const k = W / (d.length() || 1);
+    const mid = new THREE.Vector3(a[m], a[m + 1], a[m + 2]);
+    for (let i = 0; i <= segments; i++) {
+      const v = 3 * (i * ring + j);
+      for (let c = 0; c < 3; c++) a[v + c] = mid.getComponent(c) + (a[v + c] - mid.getComponent(c)) * k;
+    }
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+}
+
 /**
  * 回転体（lathe。断面 profile 個の点の列を回したもの）の三角形を並べ替えて、断面の点 from から先の帯を 2 つ目の材質にする
  * （頂点は動かさないので、頂点の番号で形を変える処理はそのまま使える）
  */
+/**
+ * 回転体のつばの上面（断面の点 0〜last の間）の三角形を取り出す。表の向き（頂点の並びから決まる向き）が
+ * 上（円錐の側）になるように並べ直す（作った形で向きを確かめる）
+ */
+function topTriangles(g: THREE.BufferGeometry, profile: number, last: number): Uint32Array<ArrayBuffer> {
+  const index = g.getIndex()!;
+  const p = g.getAttribute('position');
+  const out: number[] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < index.count; t += 3) {
+    const i = index.getX(t), j = index.getX(t + 1), k = index.getX(t + 2);
+    if (Math.min(i % profile, j % profile, k % profile) >= last) continue;
+    a.fromBufferAttribute(p, i);
+    b.fromBufferAttribute(p, j);
+    c.fromBufferAttribute(p, k);
+    const up = b.sub(a).cross(c.sub(a)).y > 0;
+    out.push(i, up ? j : k, up ? k : j);
+  }
+  return new Uint32Array(out);
+}
+
 function liningGroups(g: THREE.BufferGeometry, profile: number, from: number): void {
   const index = g.getIndex()!;
   const outer: number[] = [], inner: number[] = [];
@@ -1005,11 +1223,15 @@ function crownPush(pts: Float32Array, n: number, curve: (t: number) => THREE.Vec
   const cs = Array.from({ length: N + 1 }, (_, i) => curve(i / N));
   const ts = cs.map((_, i) => curve(Math.min(1, (i + 1) / N)).sub(curve(Math.max(0, (i - 1) / N))).normalize());
   const lim = cs.map((_, k) => inner(k / N) + REACH);
+  // 帯の高さより下で根元から離れた点は、つばのすぐ上にあり、つばを押し出して隠す（寝転がって頭が押し付けられたとき）。
+  // 数えると、つばが隠している所のために根元を上限 0.3 まで太らせる（または帽子を持ち上げる）ことになった
+  const footY = curve(CROWN_EVEN).y, footR = inner(0) + FOOT_REACH;
   const need = new Float32Array(N + 1);
   for (let j = 0; j < n; j++) {
     const x = pts[3 * j], y = pts[3 * j + 1], z = pts[3 * j + 2];
     // つばより下はつばとフリルに隠れるので見ない
     if (y < BRIM_TOP) continue;
+    if (y < footY && Math.hypot(x, z) > footR) continue;
     for (let k = 0; k <= N; k++) {
       const c = cs[k], t = ts[k];
       const dx = x - c.x, dy = y - c.y, dz = z - c.z;
@@ -1047,6 +1269,8 @@ interface Fold {
 const FOLD_N = 56;
 /** 何段かけて地面に沿う向きへ曲げるか */
 const FOLD_BEND = 6;
+/** 断面の中で縮めるとき、断面の中の向きが上向きに効く割合の下限（中心線が立っている所で縮める先が遠くなりすぎないように） */
+const FOLD_SQUASH_MIN = 0.3;
 /** 付け根からここ（中心線の割合）までは断面を回さない */
 const FOLD_KEEP = 0.12;
 /** 寝かせた円錐の中心を、地面から断面の半径の何倍の高さに置くか（それより下はつぶす） */
@@ -1124,41 +1348,71 @@ class PointGrid {
  * 円錐の表面に貼った部品（リボン）を、円錐の頂点の動きに合わせて動かす。
  * 部品の各頂点に一番近い円錐の頂点を最初に決めておき、その頂点と同じだけずらす
  */
+/** リボンがついて行く円錐の頂点の数と、混ぜる割合をなだらかにする距離（帽子の単位。円錐の頂点の間隔くらい） */
+const FOLLOW_K = 16;
+const FOLLOW_SOFT = 0.05;
+
 class Follow {
   private readonly base: Float32Array;
   private readonly baseNormal: Float32Array;
+  /** 頂点ごとに、ついて行く円錐の頂点 FOLLOW_K 個（の位置の番号）と混ぜる割合 */
   private readonly near: Int32Array;
+  private readonly weight: Float32Array;
 
   constructor(private readonly geometry: THREE.BufferGeometry, private readonly target: Swell) {
     const p = geometry.getAttribute('position') as THREE.BufferAttribute;
     this.base = Float32Array.from(p.array as Float32Array);
     this.baseNormal = Float32Array.from(geometry.getAttribute('normal').array as Float32Array);
-    this.near = new Int32Array(p.count);
+    // 一番近い 1 つだけについて行くと、隣り合う頂点が別々の円錐の頂点をまねるので、円錐が折れたとき
+    // その間でずれてリボンが細かいひだになった。近い数個の動きを、近いものほど強く混ぜる
+    const K = FOLLOW_K;
+    this.near = new Int32Array(p.count * K);
+    this.weight = new Float32Array(p.count * K);
     const t = target.rest;
+    const best = new Int32Array(K), bd = new Float64Array(K);
     for (let v = 0; v < p.count; v++) {
       const x = this.base[3 * v], y = this.base[3 * v + 1], z = this.base[3 * v + 2];
-      let best = 0, bd = Infinity;
+      bd.fill(Infinity);
       for (let j = 0; j < t.length; j += 3) {
         const d = (t[j] - x) ** 2 + (t[j + 1] - y) ** 2 + (t[j + 2] - z) ** 2;
-        if (d < bd) { bd = d; best = j; }
+        if (d >= bd[K - 1]) continue;
+        let k = K - 1;
+        for (; k > 0 && bd[k - 1] > d; k--) { bd[k] = bd[k - 1]; best[k] = best[k - 1]; }
+        bd[k] = d;
+        best[k] = j;
       }
-      this.near[v] = best;
+      let sum = 0;
+      for (let k = 0; k < K; k++) {
+        const w = 1 / (bd[k] + FOLLOW_SOFT * FOLLOW_SOFT);
+        this.near[v * K + k] = best[k];
+        this.weight[v * K + k] = w;
+        sum += w;
+      }
+      for (let k = 0; k < K; k++) this.weight[v * K + k] /= sum;
     }
   }
 
   /** follow なら円錐の頂点について行く。そうでなければ元の形を shift だけずらす。adjust：動かした後、法線を求める前に手を加える */
-  apply(follow: boolean, shift: THREE.Vector3, adjust?: (a: Float32Array) => void): void {
+  apply(follow: boolean, shift: THREE.Vector3, adjust?: (a: Float32Array, base: Float32Array) => void): void {
     const p = this.geometry.getAttribute('position') as THREE.BufferAttribute;
     const a = p.array as Float32Array;
     const rest = this.target.rest, cur = this.target.current;
     const s = [shift.x, shift.y, shift.z];
+    const K = FOLLOW_K;
     for (let v = 0; v < p.count; v++) {
-      const j = this.near[v];
       for (let c = 0; c < 3; c++) {
-        a[3 * v + c] = this.base[3 * v + c] + (follow ? cur[j + c] - rest[j + c] : s[c]);
+        let d = s[c];
+        if (follow) {
+          d = 0;
+          for (let k = 0; k < K; k++) {
+            const j = this.near[v * K + k];
+            d += (cur[j + c] - rest[j + c]) * this.weight[v * K + k];
+          }
+        }
+        a[3 * v + c] = this.base[3 * v + c] + d;
       }
     }
-    adjust?.(a);
+    adjust?.(a, this.base);
     p.needsUpdate = true;
     if (follow) this.geometry.computeVertexNormals();
     else {
@@ -1214,10 +1468,11 @@ class Swell {
   }
 
   /** push(t) だけ太らせる。fold があれば、断面を折り曲げた中心線へ移す */
-  apply(push: (t: number) => number, fold: Fold | null = null, post?: (a: Float32Array) => void): void {
+  apply(push: (t: number) => number, fold: Fold | null = null, post?: (a: Float32Array, base: Float32Array) => void): void {
     const p = this.geometry.getAttribute('position') as THREE.BufferAttribute;
     const a = p.array as Float32Array;
     const off = new THREE.Vector3(), q = new THREE.Quaternion(), c = new THREE.Vector3();
+    const axis = new THREE.Vector3(), u = new THREE.Vector3();
     for (let v = 0; v < p.count; v++) {
       const t = this.t[v];
       const k = push(t) * this.scale;
@@ -1233,18 +1488,26 @@ class Swell {
       off.set(this.base[3 * v], this.base[3 * v + 1], this.base[3 * v + 2]).sub(o)
         .addScaledVector(new THREE.Vector3(this.dir[3 * v], this.dir[3 * v + 1], this.dir[3 * v + 2]), k)
         .applyQuaternion(q);
-      // 地面側（下向き）のずれは、地面までの高さに収まるよう縮める
-      const down = -off.dot(fold.up);
-      if (down > 0) {
-        const room = fold.room[i] * (1 - w) + fold.room[i + 1] * w;
-        const r = this.dist[v] + k;
-        if (r > room) off.addScaledVector(fold.up, down * (1 - room / r));
+      // 地面側（下向き）のずれは、地面までの高さに収まるよう縮める。縮めるのは断面の中だけ（上向きから中心線に沿う成分を除いた向き）。
+      // 真上へ縮めると、円錐が斜め下を向いたとき中心線に沿った長さまで縮み、帯が V 字に折れて幅が 1/4 ほどになった
+      axis.copy(fold.centers[i + 1]).sub(fold.centers[i]).normalize();
+      u.copy(fold.up).addScaledVector(axis, -fold.up.dot(axis));
+      const s = u.length();
+      if (s > 1e-3) {
+        u.divideScalar(s);
+        const down = -off.dot(u);
+        if (down > 0) {
+          // 断面の中で地面までの距離（中心の高さを、断面の中の向きが上向きに効く割合で割る。寝かせ切らない所は割り増しを抑える）
+          const room = (fold.room[i] * (1 - w) + fold.room[i + 1] * w) / Math.max(s, FOLD_SQUASH_MIN);
+          const r = this.dist[v] + k;
+          if (r > room) off.addScaledVector(u, down * (1 - room / r));
+        }
       }
       a[3 * v] = c.x + off.x;
       a[3 * v + 1] = c.y + off.y;
       a[3 * v + 2] = c.z + off.z;
     }
-    post?.(a);
+    post?.(a, this.base);
     p.needsUpdate = true;
     this.geometry.computeVertexNormals();
     this.geometry.computeBoundingSphere();
@@ -1255,6 +1518,8 @@ const FRILL_TUCK_R = 0.9;
 const FRILL_TUCK_Y = 0.07;
 /** フリルを外へ広げる量の上限（帽子の単位。裾がつばの縁より外へ出ないくらい） */
 const FRILL_PUSH_MAX = 0.35;
+/** フリルの段が上限に収まっているかを、上限のこれだけ手前から段の途中の割合で数える（帽子の単位） */
+const FRILL_FIT_SOFT = 0.08;
 /** 円錐を広げたとき、頭・髪から離しておく隙間（帽子の単位） */
 const CROWN_GAP = 0.015;
 
@@ -1303,7 +1568,8 @@ class Frill {
         let y = Frill.baseY(v);
         if (r > L) {
           // 垂らせない所（頭に当たる所）は、裾をつばの裏に沿わせて外へ流し、縁からのぞかせる
-          const t = (r - L) / Math.max(1e-3, ROWS - L);
+          // 流す段が 1 段に満たないときは流す量も減らす（長さが ROWS の手前で、裾が丸ごと流れた形と垂れた形の間を飛ばないように）
+          const t = (r - L) / Math.max(1, ROWS - L);
           const out = Math.max(rad, this.brimR * FRILL_TUCK_R);
           rad += (out - rad) * t;
           y += (this.brimTop(rad) - FRILL_TUCK_Y - y) * t;
@@ -1333,42 +1599,46 @@ class Frill {
    */
   fit(pts: Float32Array, n: number): void {
     const { SEG, ROWS } = Frill;
-    // 段ごと・角度ごとの頭の外周の半径
     const BINS = 90;
-    const need = Array.from({ length: ROWS + 1 }, () => new Float32Array(BINS));
+    // 段ごと・角度ごとの押し出す量：波の一番内側が「頭の外周 + 髪 + 隙間」に届くまで。
+    // 点は段の高さの近く・角度の近くほど強く効かせ、離れるにつれて 0 へなめらかに弱める
+    // （範囲に入る・出るで数えると、息をするたびに点が出入りして押し出す量が飛び、フリルの一部が形を変えて点滅して見えた）。
+    // 角度は隣の数本ぶんまで同じだけ効かせる（頂点の間をすり抜けないように）
     const band = 0.07; // 段の高さからこの範囲の点を見る
+    const SPREAD = 2.5; // 角度：この本数ぶん離れるまでは同じだけ効かせる
+    const inner = Array.from({ length: ROWS + 1 }, (_, r) => Frill.baseRad(r / ROWS) - 0.07 * (r / ROWS));
+    const smooth = Array.from({ length: ROWS + 1 }, () => new Float32Array(BINS));
     for (let j = 0; j < n; j++) {
       const x = pts[3 * j], y = pts[3 * j + 1], z = pts[3 * j + 2];
       const rad = Math.hypot(x, z);
-      const bin = Math.floor(((Math.atan2(x, z) / (Math.PI * 2) + 1) % 1) * BINS) % BINS;
+      const u = ((Math.atan2(x, z) / (Math.PI * 2) + 1) % 1) * BINS;
       for (let r = 0; r <= ROWS; r++) {
-        if (Math.abs(y - Frill.baseY(r / ROWS)) > band) continue;
-        if (rad > need[r][bin]) need[r][bin] = rad;
+        const need = rad + Frill.GAP - inner[r];
+        if (need <= 0) continue;
+        const wy = 1 - THREE.MathUtils.smoothstep(Math.abs(y - Frill.baseY(r / ROWS)), band * 0.8, band * 1.2);
+        if (wy <= 0) continue;
+        const row = smooth[r];
+        for (let b = Math.floor(u - SPREAD - 1); b <= Math.ceil(u + SPREAD + 1); b++) {
+          const w = wy * (1 - THREE.MathUtils.smoothstep(Math.abs(b + 0.5 - u), SPREAD, SPREAD + 1));
+          const k = (b + BINS) % BINS;
+          if (need * w > row[k]) row[k] = need * w;
+        }
       }
     }
-    // 押し出す量：波の一番内側が「頭の外周 + 髪 + 隙間」に届くまで
-    const push = need.map((row, r) => {
-      const v = r / ROWS;
-      const inner = Frill.baseRad(v) - 0.07 * v;
-      return Float32Array.from(row, (R) => (R > 0 ? Math.max(0, R + Frill.GAP - inner) : 0));
-    });
-    // 隣の角度も見て（頂点の間をすり抜けないように）なめらかにする
-    const smooth = push.map((row) => Float32Array.from(row, (_, b) => {
-      let m = 0;
-      for (let k = -2; k <= 2; k++) m = Math.max(m, row[(b + k + BINS) % BINS]);
-      return m;
-    }));
     // 下の段は上の段より内側に入らない（裾がすぼまって頭に巻き込まないように）
     for (let r = 1; r <= ROWS; r++) {
       for (let b = 0; b < BINS; b++) smooth[r][b] = Math.max(smooth[r][b], smooth[r - 1][b]);
     }
     // 外へ広げるのは FRILL_PUSH_MAX まで。それ以上押し出す必要がある所は、その段から下を
     // つばの裏に沿わせて外へ流す（頭の横幅が広い体型や、胴の長い体型で頭の後ろの背中に当たる所など）
-    const len = new Float32Array(BINS).fill(ROWS);
+    // 長さは「上限に収まる段の数 − 1」。収まるかどうかは上限の手前 FRILL_FIT_SOFT から段の途中の割合で数える。
+    // 段の数で切ると、息をするたびに上限をまたいだ所の長さが 1 段ずつ飛んで、フリルの一部が形を変えて点滅して見えた
+    // （頭の横幅が広い扁平型）。下の段ほど押し出す量が大きいので、収まる段は上から続いている
+    const len = new Float32Array(BINS);
     for (let b = 0; b < BINS; b++) {
-      for (let r = 0; r <= ROWS; r++) {
-        if (smooth[r][b] > FRILL_PUSH_MAX) { len[b] = Math.max(0, r - 1); break; }
-      }
+      let fits = 0;
+      for (let r = 0; r <= ROWS; r++) fits += 1 - THREE.MathUtils.smoothstep(smooth[r][b], FRILL_PUSH_MAX - FRILL_FIT_SOFT, FRILL_PUSH_MAX);
+      len[b] = Math.max(0, fits - 1);
     }
     // 長さは隣の角度となめらかにつなぐ（短い方に合わせる）
     const lenS = Float32Array.from(len, (_, b) => {
@@ -1390,6 +1660,12 @@ class Frill {
       const b0 = Math.floor(t), f = t - b0;
       return row[(b0 + BINS) % BINS] * (1 - f) + row[(b0 + 1) % BINS] * f;
     };
-    this.place((r, s) => at(smooth[Math.min(r, Math.floor(at(lenS, s)))], s), (s) => at(lenS, s));
+    // 長さより下の段は、長さの所（段の途中なら上下の段の間をとる）の広げ方にそろえる
+    this.place((r, s) => {
+      const L = Math.min(r, at(lenS, s));
+      const r0 = Math.floor(L), f = L - r0;
+      const p0 = at(smooth[r0], s);
+      return f > 0 ? p0 + (at(smooth[Math.min(ROWS, r0 + 1)], s) - p0) * f : p0;
+    }, (s) => at(lenS, s));
   }
 }

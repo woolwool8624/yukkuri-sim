@@ -1,20 +1,24 @@
 import * as THREE from 'three';
 import { DARKEN_GLSL, type ToonColors } from './toonMaterial';
-import { GROUND_ACCESSORY, groundClampGlsl } from './ground';
+import { GROUND_ACCESSORY, GROUND_LAYER } from './ground';
 
 /**
  * 装飾（帽子・リボン・三つ編みなど）のトゥーン塗り。体と同じ3段の階調で、
  * 光の向きと階調の境目は体の材質と共有する（調整パネルの変更がそのまま効く）。
  */
-const vertexShader = (ground: number) => /* glsl */ `
-  ${groundClampGlsl(ground)}
+const vertexShader = /* glsl */ `
+  uniform float uGround; // この高さ（ワールド）で止める
   varying vec3 vNormalW;
   varying vec3 vPosW;
   void main() {
     vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
     vNormalW = normalize(mat3(modelMatrix) * normal);
-    // 地面に押し付けられた所は平らにつぶれて上を向く
-    if (clampToGround(wp)) vNormalW = vec3(0.0, 1.0, 0.0);
+    // 地面に押し付けられた所は平らにつぶれて上を向く。もとが上を向いていた面ほどわずかに高く置く
+    // （表と裏が同じ高さに重なると、どちらが手前か決まらず縞やぎざぎざになった：おさげのリボン・帽子のリボン）
+    if (wp.y < uGround) {
+      wp.y = uGround + ${GROUND_LAYER.toFixed(5)} * (0.5 + 0.5 * vNormalW.y);
+      vNormalW = vec3(0.0, 1.0, 0.0);
+    }
     vPosW = wp;
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
   }
@@ -69,8 +73,10 @@ export function createAccessoryMaterial(
       uSoftness: b.uSoftness,
       // 暗がりに沈める量はこの材質のもの（体と共有すると、同じ作り方の森の木やケースの皿まで暗くなる）
       uDarken: { value: 0 },
+      // 地面で止める高さ（部品によっては向きに合わせて描く側から変える）
+      uGround: { value: opts.ground ?? GROUND_ACCESSORY },
     },
-    vertexShader: vertexShader(opts.ground ?? GROUND_ACCESSORY),
+    vertexShader,
     fragmentShader,
     side: opts.doubleSide ? THREE.DoubleSide : THREE.FrontSide,
   });

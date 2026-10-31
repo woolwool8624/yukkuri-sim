@@ -18,6 +18,17 @@ export const GROUND_BRIM = GROUND_Y + 0.005;
 export const GROUND_ACCESSORY = GROUND_Y + 0.02;
 /** 帽子のフリルを止める高さ（地面に垂らしたつばの下面より上） */
 export const GROUND_FRILL = GROUND_Y + 0.045;
+/**
+ * 帽子が上を向いたまま地面に押し付けられたとき（深く前へ傾く）のフリルの高さ：フリルはつばの地面の側にあるので、
+ * つばより下・髪より上で止める（GROUND_FRILL のままだと、地面に押し付けたつばの上に白く出た）
+ */
+export const GROUND_FRILL_LOW = GROUND_Y + 0.0035;
+
+/**
+ * 装飾を地面で止めるとき、もとが上を向いていた面を下を向いていた面よりこれだけ高く置く（表と裏が同じ高さに重ならないように）。
+ * 部品ごとの止める高さの差（1mm）より小さく
+ */
+export const GROUND_LAYER = 0.0008;
 
 /** GLSL：ワールド座標 wp を地面の上に止める。止めたときは法線 n を上向きにする */
 export function groundClampGlsl(height: number): string {
