@@ -27,6 +27,8 @@ import { NestBuild } from './nestBuild';
 import { Ball } from './ball';
 import { Koro } from './koro';
 import { PushBox } from './box';
+import { HatBump } from './hatBump';
+import { HatFall } from './hatFall';
 import { Greet } from './greet';
 import { Death } from './death';
 import { Otabe } from './otabe';
@@ -130,6 +132,10 @@ export class Yukkuri {
   readonly nestBuild: NestBuild;
   /** 段ボール箱（障害物。体ごと押して運ぶ。box.object をシーンに置いて表示する） */
   readonly box: PushBox;
+  /** 帽子のつばが壁・箱など当たる物に入らないよう傾ける */
+  readonly hatBump: HatBump;
+  /** 帽子が壁と体に挟まって大きく入ったら頭から落とし、拾ってかぶり直す */
+  readonly hatFall: HatFall;
   /** ボール（マップごとに 1 個。体と押し合い、自分から転がして遊ぶ） */
   readonly ball: Ball;
   /** こーろこーろ（宣言して横に転がって遊ぶ） */
@@ -236,6 +242,8 @@ export class Yukkuri {
     this.nestStuff = new NestStuff(this);
     this.nestBuild = new NestBuild(this);
     this.box = new PushBox(this);
+    this.hatBump = new HatBump(this);
+    this.hatFall = new HatFall(this);
     this.ball = new Ball(this);
     this.koro = new Koro(this);
     this.greet = new Greet(this);
@@ -530,6 +538,7 @@ export class Yukkuri {
     this.box.update(dt); // 行き先を移動の処理より先に指示する
     this.ball.update(dt); // ボールで遊ぶ：行き先を移動の処理より先に指示する
     this.koro.update(dt); // こーろこーろ：姿勢の指令を移動の処理より先に決める（柔らかさは眠る・気絶の処理の後で上書き）
+    this.hatFall.update(dt); // 落ちた帽子を拾いに行く（行き先を移動の処理より先に指示する）
     this.dishEat.update(dt);
     this.toilet.update(dt); // といれへの行き先・身ぶりも移動の処理より先に指示する
     this.cleanup.update(dt);
@@ -588,7 +597,9 @@ export class Yukkuri {
     const still = this.locomotion.idleTime > STILL_TIME;
     this.outfit.update(still, this.koro.rolling);
     this.branch.sync(); // 三つ編みの毛先が決まった後で
-    this.box.sync(); // 帽子を箱からよけて傾ける（つばの上の餌より先に）
+    this.box.sync();
+    this.hatBump.sync(); // 帽子を壁や箱からよけて傾ける（つばの上の餌より先に）
+    this.hatFall.sync(); // 壁と体に挟まって大きく入っていたら帽子を落とす
     this.ball.sync();
     this.forage.sync(); // 帽子と三つ編みの毛先が決まった後で
     this.nestBuild.sync(); // 三つ編みの毛先が決まった後で

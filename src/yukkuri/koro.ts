@@ -191,7 +191,8 @@ export class Koro {
   /** 転がり始める（宣言の後） */
   start(): boolean {
     const y = this.y;
-    if (this.active) return false;
+    // 帽子が頭から落ちてかぶり直すまでは転がらない
+    if (this.active || y.hatFall.active) return false;
     if (y.locomotion.held) y.locomotion.release();
     if (!y.locomotion.koroBegin()) return false;
     const p = this.params;

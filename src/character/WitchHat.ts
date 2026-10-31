@@ -5,6 +5,7 @@ import { GROUND_BRIM, GROUND_CROWN, GROUND_FRILL, GROUND_FRILL_LOW } from '../re
 import { readVertex } from './FaceIndex';
 import { bowGeometries, lathe, tubeAlong, withOutline } from './shapes';
 import type { Accessory, AttachContext, OutfitParams } from './types';
+import type { BoxCollider } from '../physics/SoftBody';
 
 export interface WitchHatStyle {
   /** 帽子の布（黒） */
@@ -64,6 +65,13 @@ export class WitchHat implements Accessory {
   private crownDirty = true;
   /** 前のフレームで円錐を地面で折り曲げていた */
   private folded = false;
+  /** つばを壁に沿って折り曲げてあるか（bendAgainst。次の回、元の形から曲げ直す） */
+  private bent = false;
+  /**
+   * 今の回、帽子が高い当たる物（壁）と体に挟まれている深さ（ワールド。bendAgainst で決める）：壁から離しきれずに残った
+   * 深さと、体へのめり込みの大きい方。挟まれていなければ 0。大きければ帽子を頭から落とす（HatFall）
+   */
+  squeeze = 0;
   /** 当たり判定に使う体の頂点（帽子のまわりにあるもの） */
   private near = new Int32Array(0);
   /** あと何回の update で、落ち着いた体の形でかぶる高さを探し直すか（0 で済み） */
@@ -727,6 +735,134 @@ export class WitchHat implements Accessory {
   }
 
   /**
+   * つばを、高い当たる物（飼育ケースの壁・森の木など。walls）に沿って折り曲げる。体は壁で止まるが、つばは体より外へ
+   * 張り出しているので、壁際で縁が壁を突き抜けた。帽子ごと傾けて逃がすと 1 rad 近く傾いて頭から外れ、水平にずらすと
+   * 目に見えて横へずれて髪がのぞき、ケースの角では上限までずらしても入った。壁に入った頂点を、入った分だけ壁の手前
+   * （clear だけ離す）へ戻し、同じだけ帽子の上（円錐の側）へ寄せる（布が壁に押されて反り返るように。だいたい 45° に折れる）。
+   * 寄せる向きは帽子の上向きを壁の面に沿わせたもの：真上へ持ち上げると、転がって帽子が横倒しで壁に寄りかかったとき、
+   * つばが裏返ってガラス際に白い裏地が帯のように出た。帽子が立っていれば上へ反り、つばが壁と平行なら持ち上げずに壁へ平らに押し付ける。
+   * 帽子の置き場（傾け・ずらしを含む）を決めた後に毎回呼ぶ。壁がなければ元の形に戻す
+   */
+  bendAgainst(walls: BoxCollider[], clear: number): void {
+    // 先に、つば以外（円錐・帯・リボン・フリル）が入らないだけ帽子ごと壁から離す（下の slideOff）
+    this.squeeze = 0;
+    if (!this.brimGeometry || !this.object.visible) return;
+    if (walls.length === 0 && !this.bent) return;
+    const p = this.brimGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const a = p.array as Float32Array;
+    // 折れていないときは元の形のまま置いてあるはず（前の回に曲げていたら戻す）。折れているときは今の回の形の上から
+    if (!this.folded) a.set(this.brimBase);
+    this.bent = false;
+    if (walls.length > 0) this.slideOff(walls, clear);
+    const m = this.object.matrix, inv = this.inverse;
+    const v = new THREE.Vector3();
+    const hc = new THREE.Vector3().setFromMatrixPosition(m);
+    const up = this.upVector(new THREE.Vector3());
+    for (let i = 0; i < a.length; i += 3) {
+      v.set(a[i], a[i + 1], a[i + 2]).applyMatrix4(m);
+      let moved = false;
+      for (const c of walls) {
+        if (v.y > c.h) continue;
+        const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
+        const dx = v.x - c.x, dz = v.z - c.z;
+        const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+        const ox = c.hx + clear - Math.abs(lx), oz = c.hz + clear - Math.abs(lz);
+        if (ox <= 0 || oz <= 0) continue;
+        // 帽子の中心のある側の面へ押し出す（壁の箱は厚いので、浅い面へ押すと深く入った頂点が向こう側へ抜ける）。箱の座標 → ワールド
+        const hx = hc.x - c.x, hz = hc.z - c.z;
+        const hlx = hx * cs - hz * sn, hlz = hx * sn + hz * cs;
+        const alongX = Math.abs(hlx) - c.hx > Math.abs(hlz) - c.hz;
+        const push = alongX ? c.hx + clear - lx * Math.sign(hlx) : c.hz + clear - lz * Math.sign(hlz);
+        const px = alongX ? Math.sign(hlx) : 0, pz = alongX ? 0 : Math.sign(hlz);
+        // 壁の面の向き（部屋の側。ワールド）と、帽子の上向きを壁の面に沿わせた向き
+        const nx = px * cs + pz * sn, nz = -px * sn + pz * cs;
+        const un = up.x * nx + up.z * nz;
+        v.x += (nx + up.x - nx * un) * push;
+        v.y += up.y * push;
+        v.z += (nz + up.z - nz * un) * push;
+        moved = true;
+      }
+      if (!moved) continue;
+      v.applyMatrix4(inv);
+      a[i] = v.x;
+      a[i + 1] = v.y;
+      a[i + 2] = v.z;
+      this.bent = true;
+    }
+    p.needsUpdate = true;
+    this.brimGeometry.computeVertexNormals();
+    this.brimGeometry.computeBoundingSphere();
+  }
+
+  /**
+   * つば以外の部品（円錐・帯・リボン・フリル）の頂点が高い当たる物 walls に入っていれば、入った分（と clear）だけ帽子ごと
+   * 壁から離す（置き場の行列を直接ずらす。毎回 update で置き直すので積み重ならない）。転がって帽子が横倒しで壁に寄りかかると、
+   * つばを折り曲げても円錐がガラスの向こうへ突き抜けた。押し出す向きは帽子の中心のある側。2 つの壁（角）はそれぞれの分を足す
+   */
+  private slideOff(walls: BoxCollider[], clear: number): void {
+    const m = this.object.matrix;
+    const hc = new THREE.Vector3().setFromMatrixPosition(m);
+    const need = walls.map(() => 0);
+    const v = new THREE.Vector3();
+    /** 調べた頂点（帽子の座標）。体へのめり込みを見るのに使う */
+    const local: number[] = [];
+    this.hat.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || !o.visible || o.geometry === this.brimGeometry) return;
+      const pos = o.geometry.getAttribute('position') as THREE.BufferAttribute;
+      for (let i = 0; i < pos.count; i += SLIDE_OFF_STRIDE) {
+        v.fromBufferAttribute(pos, i);
+        local.push(v.x, v.y, v.z);
+        v.applyMatrix4(m);
+        walls.forEach((c, k) => {
+          if (v.y > c.h) return;
+          const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
+          const dx = v.x - c.x, dz = v.z - c.z;
+          const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+          if (Math.abs(lx) >= c.hx + clear || Math.abs(lz) >= c.hz + clear) return;
+          const hx = hc.x - c.x, hz = hc.z - c.z;
+          const hlx = hx * cs - hz * sn, hlz = hx * sn + hz * cs;
+          const d = Math.abs(hlx) - c.hx > Math.abs(hlz) - c.hz ? c.hx + clear - lx * Math.sign(hlx) : c.hz + clear - lz * Math.sign(hlz);
+          need[k] = Math.max(need[k], d);
+        });
+      }
+    });
+    const t = new THREE.Vector3();
+    walls.forEach((c, k) => {
+      if (need[k] <= 0) return;
+      const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
+      const hx = hc.x - c.x, hz = hc.z - c.z;
+      const hlx = hx * cs - hz * sn, hlz = hx * sn + hz * cs;
+      const alongX = Math.abs(hlx) - c.hx > Math.abs(hlz) - c.hz;
+      const px = alongX ? Math.sign(hlx) : 0, pz = alongX ? 0 : Math.sign(hlz);
+      t.x += (px * cs + pz * sn) * need[k];
+      t.z += (-px * sn + pz * cs) * need[k];
+    });
+    if (t.lengthSq() === 0) return;
+    const scale = new THREE.Vector3().setFromMatrixColumn(m, 0).length();
+    // 体（髪）へ押し込まない：離す前より深くめり込まない所まで減らす。帽子が体と壁に挟まれたとき、全部離すと体を貫通した
+    // （帽子の先が少しガラスに触れる方を残す）
+    const n = this.near.length;
+    if (n > 0) {
+      const grid = new PointGrid(this.local3, this.localN, n, BODY_CELL);
+      const tl = new THREE.Vector3(t.x, 0, t.z).applyMatrix3(new THREE.Matrix3().setFromMatrix4(this.inverse));
+      const deepest = (k: number) => {
+        let d = -Infinity;
+        for (let i = 0; i < local.length; i += 3) d = Math.max(d, grid.depth(local[i] + tl.x * k, local[i + 1] + tl.y * k, local[i + 2] + tl.z * k));
+        return d;
+      };
+      const allow = Math.max(0, deepest(0)) + SLIDE_BODY_SLACK;
+      const k = SLIDE_STEPS.find((f) => deepest(f) <= allow) ?? 0;
+      // 挟まり具合：離しきれずに壁に残る深さと、体へのめり込み（ワールド）
+      this.squeeze = Math.max(Math.max(...need) * (1 - k), deepest(k) * scale);
+      if (k === 0) return;
+      t.multiplyScalar(k);
+    }
+    m.premultiply(new THREE.Matrix4().makeTranslation(t.x, 0, t.z));
+    this.object.matrixWorldNeedsUpdate = true;
+    this.inverse.copy(m).invert();
+  }
+
+  /**
    * 線分 p→q（体と同じ座標）が、つばの上面（今の形。垂らしていれば垂らした形）を通り抜けた向きの和：
    * 下（頭の側）から上（円錐の側）へ通るたびに +1、逆は -1。かぶっていないとき（外して持っている）は 0。
    * 三つ編みが頭の側からつばを突き抜けたかを見るのに使う（縁を回り込む・縁の下をくぐるときは面を通らないので数えない）
@@ -1283,6 +1419,11 @@ const NEAR_BELOW = -2.4;
 /** 体の外へ押し出すときの升目の大きさと、体から離しておく隙間（帽子の単位） */
 const BODY_CELL = 0.2;
 const BODY_CLEAR = 0.03;
+/** slideOff で調べる頂点の間引き（この数おきに見る） */
+const SLIDE_OFF_STRIDE = 3;
+/** slideOff：壁から離す量の候補（求めた量に対する比。大きい順に、体へ押し込まないものを選ぶ）と、体へのめり込みの許し（帽子の単位） */
+const SLIDE_STEPS = [1, 0.75, 0.5, 0.25];
+const SLIDE_BODY_SLACK = 0.02;
 
 /**
  * 体の表面の点（と法線）を升目に分けたもの。近い点を素早く探して、
@@ -1314,25 +1455,40 @@ class PointGrid {
     return ((i + 512) * 1024 + (j + 512)) * 1024 + (k + 512);
   }
 
-  /** a（x,y,z の並び）の各頂点で、一番近い体の点の法線の向きに clear 以上離れていなければ外へ出す */
-  pushOut(a: Float32Array, clear: number): void {
-    const c = this.cell, P = this.pts, N = this.nrm;
-    for (let v = 0; v < a.length; v += 3) {
-      const x = a[v], y = a[v + 1], z = a[v + 2];
-      const ci = Math.floor(x / c), cj = Math.floor(y / c), ck = Math.floor(z / c);
-      let best = -1, bestD = Infinity;
-      for (let di = -1; di <= 1; di++) {
-        for (let dj = -1; dj <= 1; dj++) {
-          for (let dk = -1; dk <= 1; dk++) {
-            const list = this.cells.get(this.keyOf(ci + di, cj + dj, ck + dk));
-            if (!list) continue;
-            for (const j of list) {
-              const d = (P[3 * j] - x) ** 2 + (P[3 * j + 1] - y) ** 2 + (P[3 * j + 2] - z) ** 2;
-              if (d < bestD) { bestD = d; best = j; }
-            }
+  /** (x, y, z) に一番近い体の点の番号（升目の近くになければ -1） */
+  private nearest(x: number, y: number, z: number): number {
+    const c = this.cell, P = this.pts;
+    const ci = Math.floor(x / c), cj = Math.floor(y / c), ck = Math.floor(z / c);
+    let best = -1, bestD = Infinity;
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let dk = -1; dk <= 1; dk++) {
+          const list = this.cells.get(this.keyOf(ci + di, cj + dj, ck + dk));
+          if (!list) continue;
+          for (const j of list) {
+            const d = (P[3 * j] - x) ** 2 + (P[3 * j + 1] - y) ** 2 + (P[3 * j + 2] - z) ** 2;
+            if (d < bestD) { bestD = d; best = j; }
           }
         }
       }
+    }
+    return best;
+  }
+
+  /** (x, y, z) が、一番近い体の点の法線の向きに測って体の中へどれだけ入っているか（外なら負。近くに点がなければ -Infinity） */
+  depth(x: number, y: number, z: number): number {
+    const j = this.nearest(x, y, z);
+    if (j < 0) return -Infinity;
+    const P = this.pts, N = this.nrm;
+    return -((x - P[3 * j]) * N[3 * j] + (y - P[3 * j + 1]) * N[3 * j + 1] + (z - P[3 * j + 2]) * N[3 * j + 2]);
+  }
+
+  /** a（x,y,z の並び）の各頂点で、一番近い体の点の法線の向きに clear 以上離れていなければ外へ出す */
+  pushOut(a: Float32Array, clear: number): void {
+    const P = this.pts, N = this.nrm;
+    for (let v = 0; v < a.length; v += 3) {
+      const x = a[v], y = a[v + 1], z = a[v + 2];
+      const best = this.nearest(x, y, z);
       if (best < 0) continue;
       const nx = N[3 * best], ny = N[3 * best + 1], nz = N[3 * best + 2];
       const out = (x - P[3 * best]) * nx + (y - P[3 * best + 1]) * ny + (z - P[3 * best + 2]) * nz;

@@ -40,8 +40,8 @@ const MAX_LOBES = 40;
 const SPACING_FOLLOW = 0.005;
 const SPACING_SNAP = 0.03;
 const SPACING_MOVE = 0.4;
-/** 伸ばしているとき、編み目を縦に伸ばしてよい上限（倍） */
-const LOBE_STRETCH_MAX = 2.2;
+/** 立ち止まって決めた間隔に合わせて、編み目を縦に伸ばしてよい上限（倍）。三つ編みを伸ばしている間に、これ以上伸ばすことはない */
+const LOBE_STRETCH_MAX = 1.3;
 /** 編み目の数を変えるのは、ちょうどの数からこれ以上離れたとき（0.5 より大きくして境目でのばたつきを防ぐ） */
 const COUNT_KEEP = 0.8;
 /** 帽子の外へ出た所から編み始めまでの道筋の長さ（編み目1つの長さに対する比。一番上の編み目の上半分ほど） */
@@ -225,6 +225,11 @@ export class Braid implements Accessory {
   private headR = 1;
   /** 編み目の間隔（道筋に沿った距離）。呼吸などの小さな伸び縮みにはゆっくりしか追従しない（-1 は未定） */
   private spacing = -1;
+  /**
+   * 立ち止まって落ち着いているときの編み目の間隔（-1 は未定）。伸ばしている間はこれを使う（伸ばす合間に歩く・身をかがめるなどで
+   * 間隔が変わったまま伸ばすと、編み目の間が空いた）
+   */
+  private restSpacing = -1;
   private count = 0;
   /** 編み目の数を、落ち着いているときに決めたか（決めるまでは仮の数で、毎回決め直す） */
   private counted = false;
@@ -306,6 +311,7 @@ export class Braid implements Accessory {
     const bottom = Math.min(st.top - st.segment * 1.5, st.top + (full - st.top) * k);
     this.path = [];
     this.spacing = -1;
+    this.restSpacing = -1;
     this.count = 0;
     this.counted = false;
     this.trimmed = -1;
@@ -436,31 +442,39 @@ export class Braid implements Accessory {
     // 作り直した直後（帽子が載り終わる前など）は仮の数として、落ち着くまで毎回決め直す
     let count = this.count;
     const still = ctx.still !== false;
-    // 伸ばしている間は数を変えない（道筋の長さが毎コマ大きく変わるので、決め直すと編み目が出たり消えたりしてちらついた）。
-    // 代わりに、間が空く分だけ編み目を縦に伸ばして埋める（下の stretch）
+    // 伸ばしている間は、編み目の大きさ・間隔を伸ばす前のまま変えず、長さの変わった分は毛先の側で編み目を足し引きする
+    // （下の lobes）。足す編み目は小さい所から育て、引く編み目は小さくして消す（数をいきなり変えると、編み目が出たり消えたりしてちらついた）。
+    // 前は数を止めて間隔と編み目を縦に引き伸ばしていたが、伸ばすと編み目がばらけて三つ編みに見えなかった（指示：三つ編みの見た目から外れない）
     const reaching = this.reachAmount > 1e-3;
     if (!reaching && (!this.counted || still)) {
       const raw = target / (seg * LOBE_STEP);
       if (!this.counted || Math.abs(raw - count) >= COUNT_KEEP) count = Math.min(MAX_LOBES, Math.max(2, Math.round(raw)));
       if (still) this.counted = true;
     }
-    const want = target / count;
-    if (this.spacing < 0 || count !== this.count) this.spacing = want;
-    else this.spacing += (want - this.spacing) * (!still || Math.abs(want - this.spacing) > want * SPACING_SNAP ? SPACING_MOVE : SPACING_FOLLOW);
-    this.count = count;
-    const braidEnd = this.spacing * count;
-    // 伸ばしていて間隔が広がった分だけ、編み目を縦に伸ばす（間が空いてばらばらに見えないように）
+    if (!reaching) {
+      const want = target / count;
+      if (this.spacing < 0 || count !== this.count) this.spacing = want;
+      else this.spacing += (want - this.spacing) * (!still || Math.abs(want - this.spacing) > want * SPACING_SNAP ? SPACING_MOVE : SPACING_FOLLOW);
+      this.count = count;
+      if (still) this.restSpacing = this.spacing;
+    } else if (this.restSpacing > 0) this.spacing = this.restSpacing;
+    else if (this.spacing < 0) this.spacing = target / count;
+    // 描く編み目の数（伸ばしている間は端数あり。端数の分だけ一番先の編み目を小さく）
+    const shown = reaching ? THREE.MathUtils.clamp(target / this.spacing, 2, MAX_LOBES) : count;
+    const braidEnd = this.spacing * shown;
+    // 立ち止まって決めた間隔が編み目 1 つ分の間隔より少し広いとき、編み目を縦に伸ばして埋める（伸ばしている間も同じ量のまま）
     const stretch = THREE.MathUtils.clamp(this.spacing / (seg * LOBE_STEP), 1, LOBE_STRETCH_MAX);
     this.lobes.forEach((g, i) => {
-      g.visible = i < count;
+      g.visible = i < Math.ceil(shown - 1e-3);
       if (!g.visible) return;
-      const d = ((i + 0.5) / count) * braidEnd;
+      const d = (i + 0.5) * this.spacing;
       // 下ほど少し細く。左右交互に、とがった先が中央の下を向くよう傾ける
-      const taper = 1 - 0.25 * (i / count);
+      const taper = 1 - 0.25 * (i / shown);
+      const grow = THREE.MathUtils.clamp(shown - i, 0, 1);
       const s = i % 2 === 0 ? 1 : -1;
-      place(g, d, s * w * 0.2 * taper, new THREE.Vector3(w * 1.05 * taper, seg * 1.45 * taper * stretch, w * taper), -s * LOBE_TILT);
+      place(g, d, s * w * 0.2 * taper, new THREE.Vector3(w * 1.05 * taper, seg * 1.45 * taper * stretch, w * taper).multiplyScalar(grow), -s * LOBE_TILT);
       // 下の編み目ほど手前（上の編み目の先に重なる）
-      g.translateZ(w * 0.04 * (i / count));
+      g.translateZ(w * 0.04 * (i / shown));
     });
     // リボンは三つ編みの流れる向き（数個前の編み目からの向き）に立てる。
     // 結び目のあたりは体の下へ回り込み始めるので、その場の向きだと下を向いてしまう

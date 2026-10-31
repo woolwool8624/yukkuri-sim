@@ -51,12 +51,6 @@ const REST_TIME = 1.2;
  */
 const BEND = 0.35;
 const PUSH_SQUASH = 0.92;
-/** 帽子：つばの縁を箱からこれだけ（帽子の単位）離す。傾ける角度の上限（rad）と、戻す速さ（1/s） */
-const HAT_CLEAR = 0.05;
-/** 帽子：箱に入らないか調べるつばの縁の点の数 */
-const RIM_SAMPLES = 48;
-const HAT_TILT_MAX = 1.1;
-const HAT_RATE = 10;
 const SAY_EVERY = 1.8;
 
 const FACE_PUSH: Partial<PartSelection> = { eyes: 'squeeze', brows: 'strain', mouth: 'grit', strain: 'max', sweat: 'forehead,templeL,cheekR' };
@@ -89,11 +83,6 @@ export class PushBox {
   private readonly materials: THREE.Material[] = [];
   private readonly geometries: THREE.BufferGeometry[] = [];
   private builtFor = -1;
-  /** 帽子を後ろへ傾けている角度（rad） */
-  private hatTilt = 0;
-  private readonly hatNudge = new THREE.Matrix4();
-  private readonly hatAxis = new THREE.Vector3(1, 0, 0);
-  private readonly hatPivot = new THREE.Vector3();
 
   constructor(private readonly y: Yukkuri) {
     this.object.visible = false;
@@ -315,77 +304,6 @@ export class PushBox {
   }
 
   /**
-   * 帽子：箱に体を寄せると、つばの箱の側の縁が箱に刺さる（縁が箱の上面とほぼ同じ高さに来る）。押す向きと反対側の縁を支点に
-   * 帽子を傾けて、縁のどこも箱の外（上か横）に保つ（つばが箱に押し上げられる）。押していないときは戻す。
-   * 縁の 1 点（押す向きの先）だけで判定すると、その点は箱の高さより上でもほかの縁が箱に 30cm 以上入っていた
-   */
-  private tiltHat(dt: number): void {
-    const hat = this.y.outfit.hat;
-    if (!hat) return;
-    let want = 0;
-    // 押していないとき（寄る・向きを変える・歩いて当たる）も、つばが箱に入りそうなら傾ける
-    if (this.placed && hat.object.visible && !hat.carry) {
-      const c = this.collider;
-      // 帽子から箱への向き：帽子の中心から、箱の側面で一番近い点への向き（水平）
-      const worn = hat.worn;
-      const hc = new THREE.Vector3().setFromMatrixPosition(worn);
-      const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
-      const hx0 = hc.x - c.x, hz0 = hc.z - c.z;
-      const nlx = THREE.MathUtils.clamp(hx0 * cs - hz0 * sn, -c.hx, c.hx);
-      const nlz = THREE.MathUtils.clamp(hx0 * sn + hz0 * cs, -c.hz, c.hz);
-      const toward = new THREE.Vector3(c.x + nlx * cs + nlz * sn - hc.x, 0, c.z - nlx * sn + nlz * cs - hc.z);
-      if (toward.lengthSq() < 1e-8) toward.set(c.x - hc.x, 0, c.z - hc.z);
-      toward.normalize();
-      // かぶった置き場で、箱と反対側のつばの縁（支点）と、縁をぐるりと 48 点
-      const inv = worn.clone().invert();
-      const d = toward.clone().transformDirection(inv);
-      const ang = Math.atan2(d.x, d.z);
-      const pivot = hat.brimLocal(ang + Math.PI, 1, new THREE.Vector3()).applyMatrix4(worn);
-      const rim: THREE.Vector3[] = [];
-      for (let k = 0; k < RIM_SAMPLES; k++) rim.push(hat.brimLocal((k / RIM_SAMPLES) * Math.PI * 2, 1, new THREE.Vector3()).applyMatrix4(worn));
-      const axis = new THREE.Vector3(0, 1, 0).cross(toward).normalize(); // 箱の側の縁を持ち上げる向きの回転軸
-      const scale = new THREE.Vector3().setFromMatrixColumn(worn, 0).length();
-      const m = HAT_CLEAR * scale;
-      const q = new THREE.Vector3();
-      // 傾け a で、縁のどこも箱（上面と横の面から m だけ広げた箱）に入らないか
-      const out = (a: number) => {
-        for (const r of rim) {
-          q.copy(r).sub(pivot).applyAxisAngle(axis, -a).add(pivot);
-          if (q.y > c.h + m) continue;
-          const dx = q.x - c.x, dz = q.z - c.z;
-          if (Math.abs(dx * cs - dz * sn) < c.hx + m && Math.abs(dx * sn + dz * cs) < c.hz + m) return false;
-        }
-        return true;
-      };
-      if (!out(0)) {
-        want = HAT_TILT_MAX;
-        for (let a = 0.05; a <= HAT_TILT_MAX; a += 0.05) {
-          if (out(a)) {
-            want = a;
-            break;
-          }
-        }
-      }
-      this.hatAxis.copy(axis);
-      this.hatPivot.copy(pivot);
-    }
-    // 傾けるのはすぐに（遅れると、その間つばが箱に入る）。戻すのはなめらかに
-    if (want > this.hatTilt) this.hatTilt = want;
-    else this.hatTilt += (want - this.hatTilt) * Math.min(1, HAT_RATE * dt);
-    if (this.hatTilt < 1e-3) {
-      if (hat.nudge === this.hatNudge) hat.setNudge(null);
-      this.hatTilt = 0;
-      return;
-    }
-    // 支点のまわりに回す（ワールド）
-    const p = this.hatPivot;
-    this.hatNudge.makeTranslation(p.x, p.y, p.z)
-      .multiply(new THREE.Matrix4().makeRotationAxis(this.hatAxis, -this.hatTilt))
-      .multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
-    hat.setNudge(this.hatNudge);
-  }
-
-  /**
    * 押していないとき：歩いて箱に当たり、行き先が箱の向こう（当たっている面の奥）なら、そこで止まる
    * （止めないと、箱に体を押し付けたまま進もうとし続ける）
    */
@@ -427,8 +345,6 @@ export class PushBox {
 
   /** 描画の直前に呼ぶ（帽子の置き場が決まった後） */
   sync(): void {
-    // 帽子のつばが箱に入らないよう傾ける：今のかぶった置き場で決めて、すぐ当てる（1 コマ前の置き場で決めると、速く動いたとき入った）
-    this.tiltHat(1 / 60); // 戻す速さは 1 コマ分ずつ（描く回数で数える）
     if (!this.placed) return;
     if (this.builtFor !== this.y.outfit.builds) this.build();
     const c = this.collider;

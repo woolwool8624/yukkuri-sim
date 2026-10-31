@@ -18,6 +18,7 @@ export type LineKey =
   | 'branchGo' | 'branchLower' | 'branchPick' | 'branchDrop' | 'branchThreat'
   | 'forageGo' | 'forageLower' | 'forageOnHat' | 'forageFull' | 'forageBusy' | 'forageSpill'
   | 'stashStart' | 'stashIn' | 'stashDone' | 'stashFull' | 'stashNone'
+  | 'hatFall' | 'hatBack'
   | 'boxGo' | 'boxPush' | 'boxDone' | 'boxStuck' | 'boxBump'
   | 'ballGo' | 'ballKick' | 'ballChase' | 'ballDone' | 'ballStuck' | 'ballNudge'
   | 'koroDone'
@@ -81,6 +82,8 @@ const COMMON: Lines = {
   stashDone: ['ゆっくりしまったよ！', 'これでたくわえはばっちりだよ！', 'ゆっへん！', 'おぼうしさん、ゆっくりおかえり！'],
   stashFull: ['もうはいらないよ！', 'おぼうしのなかがいっぱいだよ！', 'ゆぅ…ぱんぱんだよ…'],
   stashNone: ['しまうごはんさんがないよ？', 'つばにはなにものってないよ？'],
+  hatFall: ['ゆあぁっ！？おぼうしさん！', 'おぼうしさんがっ！', 'ゆっ！？おぼうしさんがおちたよ！'],
+  hatBack: ['ゆっくりかぶったよ！', 'おぼうしさん、ゆっくりおかえり！', 'ゆっへん！'],
   boxGo: ['はこさんをうごかすよ！', 'ゆっくりおすよ！', 'まかせてね！'],
   boxPush: ['ゆっ…ゆっ…', 'うんしょ…うんしょ…', 'ゆぎぎ…', 'おもいよ…', 'ゆ～ん…しょっ…', 'がんばるよ…！'],
   boxDone: ['ふぅ…ゆっくりうごいたよ！', 'ゆっへん！', 'やったよ！', 'ゆぅ…つかれたよ…'],
@@ -176,6 +179,8 @@ const MARISA_NOZE: Partial<Lines> = {
   stashDone: ['しまったのぜ！', 'これでふゆごもりもばっちりなのぜ！', 'ゆっへん！', 'まりさのおぼうしはべんりなのぜ！'],
   stashFull: ['もうはいらないのぜ！', 'おぼうしのなかがいっぱいなのぜ！', 'ゆぅ…ぱんぱんなのぜ…'],
   stashNone: ['しまうごはんさんがないのぜ？', 'つばにはなにものってないのぜ？'],
+  hatFall: ['ゆあぁっ！？まりさのおぼうしさんが！', 'おぼうしさんがっ！なのぜ！', 'ゆっ！？おぼうしがおちたのぜ！'],
+  hatBack: ['かぶったのぜ！', 'まりさのおぼうしはやっぱりここなのぜ！', 'ゆっへん！'],
   boxGo: ['はこさんをうごかすのぜ！', 'まりさにまかせるのぜ！', 'おすのぜ！'],
   boxPush: ['ゆっ…ゆっ…', 'うんしょ…なのぜ…', 'ゆぎぎ…', 'おもいのぜ…', 'まりさはまけないのぜ…！', 'もうちょっとなのぜ…'],
   boxDone: ['ふぅ…うごいたのぜ！', 'ゆっへん！', 'まりさのちからをみたか、なのぜ！', 'ゆぅ…つかれたのぜ…'],

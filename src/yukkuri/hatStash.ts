@@ -29,7 +29,7 @@ const PUT_HEIGHT = 0.5;
 /** 脱ぐとき、この進みから円錐をつぶし始める（かぶるときは逆に、始めのこの割合までに戻す） */
 const CRUSH_FROM = 0.55;
 /** かぶる向きのまま置くときの、つばの根元の地面からの高さ（帽子の大きさに対する比。つばの縁が地面に着く） */
-const UPRIGHT_HEIGHT = 0.14;
+export const UPRIGHT_HEIGHT = 0.14;
 /** かぶる向きのまま置くときの、つばの縁と体の表面の間（胴の半径に対する比） */
 const UPRIGHT_GAP = 0.6;
 /** ひっくり返す途中に持ち上げる高さ（胴の半径に対する比） */
@@ -131,7 +131,8 @@ export class HatStash {
   start(hooks: StashHooks, upright = false): boolean {
     const y = this.y;
     const hat = y.outfit.hat, braid = y.outfit.braid;
-    if (this.active || !hat || !braid || !braid.grip.ready || y.rest.fainting || y.locomotion.isLying || y.locomotion.tilted) return false;
+    // 帽子が頭から外れている（落ちて地面にある）ときは始めない
+    if (this.active || !hat || hat.carry || !braid || !braid.grip.ready || y.rest.fainting || y.locomotion.isLying || y.locomotion.tilted) return false;
     y.rest.wake(true);
     this.hooks = hooks;
     this.tipped = false;
@@ -204,6 +205,45 @@ export class HatStash {
     y.locomotion.moveTo(this.clearTo.x, this.clearTo.z);
     this.clearTo.copy(y.locomotion.target);
     this.go('clear');
+  }
+
+  /**
+   * 地面にかぶる向きのまま置かれた帽子（置き場 ground。頭から落ちたときなど）を拾ってかぶる：帽子のそばへ行き、
+   * つかむ所が三つ編みの側に来る向きへ回り、つかんでかぶる（脱いだ帽子をかぶり直すのと同じ。「戻る」から始める）
+   */
+  pickUp(ground: THREE.Matrix4, hooks: StashHooks): boolean {
+    const y = this.y;
+    const hat = y.outfit.hat, braid = y.outfit.braid;
+    if (this.active || !hat || !braid || !braid.grip.ready || y.rest.fainting || y.locomotion.isLying || y.locomotion.tilted) return false;
+    y.rest.wake(true);
+    this.hooks = hooks;
+    this.tipped = true;
+    this.upright = true;
+    hat.lined = false;
+    this.ground.copy(ground);
+    hat.carry = this.carry.copy(ground);
+    // 三つ編みの側（aim と同じ決め方。体に対して決まる）
+    this.front.copy(bodyFacing(y));
+    const right = new THREE.Vector3(this.front.z, 0, -this.front.x);
+    this.sideSign = braidSide(y).dot(right) >= 0 ? 1 : -1;
+    this.side.copy(right).multiplyScalar(this.sideSign);
+    this.heading = y.body.yaw;
+    // つかむ所：つばの、ゆっくりに一番近い側
+    const d = y.center.clone().applyMatrix4(ground.clone().invert());
+    hat.brimLocal(Math.atan2(d.x, d.z), GRAB_R, this.grabLocal);
+    const g = this.grabLocal.clone().applyMatrix4(ground);
+    this.putGrab.copy(g);
+    // 立つ所：つかむ所から帽子の外へ、体の半分ほど離れた所
+    const c = new THREE.Vector3().setFromMatrixPosition(ground);
+    const out = g.clone().sub(c).setY(0);
+    if (out.lengthSq() < 1e-8) out.copy(this.side).negate();
+    out.normalize();
+    this.spot.copy(g).setY(0).addScaledVector(out, bodyExtent(y, out) + y.shape.radius * PUT_GAP);
+    y.stage?.limit(this.spot, y.stageMargin);
+    y.locomotion.stop();
+    this.phase = 'down';
+    this.putBack();
+    return true;
   }
 
   /** 中へ入れ終えた：脱いだ所へ戻ってかぶり直す */
@@ -467,7 +507,7 @@ export class HatStash {
 }
 
 /** 行列 a から b へ k の割合だけ寄せる（位置・向き・大きさを別々に） */
-function blend(a: THREE.Matrix4, b: THREE.Matrix4, k: number, out: THREE.Matrix4): THREE.Matrix4 {
+export function blend(a: THREE.Matrix4, b: THREE.Matrix4, k: number, out: THREE.Matrix4): THREE.Matrix4 {
   const pa = new THREE.Vector3(), qa = new THREE.Quaternion(), sa = new THREE.Vector3();
   const pb = new THREE.Vector3(), qb = new THREE.Quaternion(), sb = new THREE.Vector3();
   a.decompose(pa, qa, sa);
