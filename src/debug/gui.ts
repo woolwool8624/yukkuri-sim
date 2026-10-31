@@ -302,6 +302,11 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   box.add({ f: () => y.box.push() }, 'f').name('押す');
   box.add({ f: () => y.box.clear() }, 'f').name('片付ける');
 
+  // ボール：マップごとに 1 個置いてある。立って何もしていない時間が続くと、自分から転がして遊ぶ
+  const ball = tools.addFolder('ボール');
+  ball.add(y.ball, 'auto').name('自分から遊ぶ');
+  ball.add({ f: () => y.ball.place() }, 'f').name('元の所に置き直す');
+
   // 枝：ボタンで地面に出し、三つ編みで持つ（今は持つだけ）
   const branch = tools.addFolder('枝');
   branch.add({ f: () => y.branch.spawn() }, 'f').name('枝を出す');

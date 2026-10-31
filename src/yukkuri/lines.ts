@@ -19,6 +19,7 @@ export type LineKey =
   | 'forageGo' | 'forageLower' | 'forageOnHat' | 'forageFull' | 'forageBusy' | 'forageSpill'
   | 'stashStart' | 'stashIn' | 'stashDone' | 'stashFull' | 'stashNone'
   | 'boxGo' | 'boxPush' | 'boxDone' | 'boxStuck' | 'boxBump'
+  | 'ballGo' | 'ballKick' | 'ballChase' | 'ballDone' | 'ballStuck' | 'ballNudge'
   | 'koroDone'
   | 'dishNone' | 'dishEmpty' | 'waterNone'
   | 'cleanNoToilet' | 'cleanNone' | 'cleanPick' | 'cleanDone'
@@ -105,6 +106,12 @@ const COMMON: Lines = {
   grillStuck: ['ゆぅ…あんよさんがうごかないよ…', 'うごけないよ…'],
   grillEscape: ['あぢゅい！ごーろごーろするよ！', 'ゆわあああ！あぢゅいいい！'],
   boxBump: ['ゆっ！？はこさんがあるよ…', 'とおれないよ…', 'ゆぅ…じゃまだよ…'],
+  ballGo: ['ぼーるさんだよ！', 'ゆっ！ぼーるさんであそぶよ！', 'ころころするよ！', 'ゆっくりあそぶよ！'],
+  ballKick: ['えいっ！', 'それっ！', 'ころころ〜♪', 'ゆっ！'],
+  ballChase: ['まってね〜！', 'ゆっゆっ♪', 'どこいくの〜？', 'つかまえるよ！'],
+  ballDone: ['ゆっくりたのしかったよ！', 'ゆふ〜♪', 'またあそぼうね！', 'いっぱいあそんだよ！'],
+  ballStuck: ['ゆぅ…ぼーるさんがとれないよ…', 'すみっこにはいっちゃったよ…'],
+  ballNudge: ['ぐりぐり…', 'ゆ〜っ…でておいで〜', 'すみっこからだしてあげるよ！'],
   koroDone: ['ゆっくりころがったよ！', 'ゆふ〜♪', 'めがまわるよ〜', 'たのしかったよ！'],
   declarePoo: ['うんうんするよ！'],
   declareExercise: ['うんうんたいそうはじまるよ！'],
@@ -194,6 +201,12 @@ const MARISA_NOZE: Partial<Lines> = {
   grillStuck: ['ゆぅ…あんよさんがうごかないのぜ…', 'うごけないのぜ…'],
   grillEscape: ['あぢゅい！ごーろごーろするのぜ！', 'ゆわあああ！あぢゅいのぜええ！'],
   boxBump: ['ゆっ！？はこさんがじゃまなのぜ…', 'とおれないのぜ…', 'ゆぅ…どくのぜ…'],
+  ballGo: ['ぼーるさんなのぜ！', 'ゆっ！ぼーるさんであそぶのぜ！', 'まりさのきっくをみるのぜ！'],
+  ballKick: ['えいっ！', 'それっ！', 'ころころ〜♪', 'まりさのしゅーとなのぜ！'],
+  ballChase: ['まつのぜ〜！', 'ゆっゆっ♪', 'にがさないのぜ！'],
+  ballDone: ['ゆっくりたのしかったのぜ！', 'ゆふ〜♪', 'またあそんでやるのぜ！'],
+  ballStuck: ['ゆぅ…ぼーるさんがとれないのぜ…', 'すみっこにはまったのぜ…'],
+  ballNudge: ['ぐりぐり…', 'ゆ〜っ…でてくるのぜ〜', 'まりさがだしてやるのぜ！'],
   koroDone: ['ゆっくりころがったのぜ！', 'ゆふ〜♪', 'めがまわるのぜ〜', 'たのしかったのぜ！'],
   declarePoo: ['うんうんするのぜ！'],
   declareExercise: ['うんうんたいそうはじまるのぜ！'],

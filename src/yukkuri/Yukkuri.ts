@@ -24,6 +24,7 @@ import { Branch } from './branch';
 import { Forage } from './forage';
 import { NestStuff } from './nestStuff';
 import { NestBuild } from './nestBuild';
+import { Ball } from './ball';
 import { Koro } from './koro';
 import { PushBox } from './box';
 import { Greet } from './greet';
@@ -129,6 +130,8 @@ export class Yukkuri {
   readonly nestBuild: NestBuild;
   /** 段ボール箱（障害物。体ごと押して運ぶ。box.object をシーンに置いて表示する） */
   readonly box: PushBox;
+  /** ボール（マップごとに 1 個。体と押し合い、自分から転がして遊ぶ） */
+  readonly ball: Ball;
   /** こーろこーろ（宣言して横に転がって遊ぶ） */
   readonly koro: Koro;
   /** あいさつ（動作の前の宣言と、挨拶） */
@@ -233,6 +236,7 @@ export class Yukkuri {
     this.nestStuff = new NestStuff(this);
     this.nestBuild = new NestBuild(this);
     this.box = new PushBox(this);
+    this.ball = new Ball(this);
     this.koro = new Koro(this);
     this.greet = new Greet(this);
     this.death = new Death(this);
@@ -351,6 +355,7 @@ export class Yukkuri {
       this.nestBuild.cancel();
       this.nestStuff.mapChanged(stage.map);
       this.forage.mapChanged(stage.map);
+      this.ball.mapChanged(stage.map);
     };
     this.locomotion.limit = (t) => stage.limit(t, this.stageMargin);
     this.locomotion.route = (from, to) => stage.via(from.x, from.z, to.x, to.z, this.shape.radius);
@@ -510,6 +515,7 @@ export class Yukkuri {
       this.poking.update(dt);
       this.texts.update(dt);
       this.body.step(dt, this.physics);
+      this.ball.physics(dt);
       return;
     }
     // 寝返りで横へずれてから起き上がる：寝返りが終わったら、まだ塊に近ければもう一度、離れていれば起き上がる
@@ -522,6 +528,7 @@ export class Yukkuri {
     this.branch.update(dt);
     this.forage.update(dt);
     this.box.update(dt); // 行き先を移動の処理より先に指示する
+    this.ball.update(dt); // ボールで遊ぶ：行き先を移動の処理より先に指示する
     this.koro.update(dt); // こーろこーろ：姿勢の指令を移動の処理より先に決める（柔らかさは眠る・気絶の処理の後で上書き）
     this.dishEat.update(dt);
     this.toilet.update(dt); // といれへの行き先・身ぶりも移動の処理より先に指示する
@@ -541,6 +548,7 @@ export class Yukkuri {
     this.poking.update(dt);
     this.texts.update(dt);
     this.body.step(dt, this.physics);
+    this.ball.physics(dt); // 体に押された分で転がる
   }
 
   /** 描画直前に呼ぶ */
@@ -581,6 +589,7 @@ export class Yukkuri {
     this.outfit.update(still);
     this.branch.sync(); // 三つ編みの毛先が決まった後で
     this.box.sync(); // 帽子を箱からよけて傾ける（つばの上の餌より先に）
+    this.ball.sync();
     this.forage.sync(); // 帽子と三つ編みの毛先が決まった後で
     this.nestBuild.sync(); // 三つ編みの毛先が決まった後で
     this.peni.update(still);

@@ -72,6 +72,7 @@ scene.add(yukkuri.branch.object);
 scene.add(yukkuri.forage.object);
 scene.add(yukkuri.nestStuff.object);
 scene.add(yukkuri.box.object);
+scene.add(yukkuri.ball.object);
 scene.add(yukkuri.dishEat.object);
 scene.add(yukkuri.grill.object);
 // いる場所（マップ）

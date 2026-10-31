@@ -21,6 +21,22 @@ export interface BoxCollider {
   contacts: number;
 }
 
+/**
+ * 地面を転がる玉（当たる物。ボール）。中心 (x, y, z)・半径 r。体と押し合う：体の頂点は玉の外へ横に押し出し、
+ * 押し出した量の share の割合だけ玉が反対へ動く（玉は体より軽い）。動いた量は moveX・moveZ にためる（玉の側が速さにして取り出す）
+ */
+export interface BallCollider {
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  share: number;
+  moveX: number;
+  moveZ: number;
+  /** 直近ステップで当たっていた頂点の数 */
+  contacts: number;
+}
+
 export interface SoftBodyParams {
   /** 重力加速度 (m/s²) */
   gravity: number;
@@ -115,6 +131,8 @@ export class SoftBody {
   groundContacts = 0;
   /** 地面に置いた箱（体はすり抜けない。箱の外へ押し出す） */
   readonly boxes: BoxCollider[] = [];
+  /** 地面を転がる玉（体と押し合う） */
+  readonly balls: BallCollider[] = [];
 
   /**
    * 体の「筋肉」による入力。シェイプマッチングの目標形状を変えることで体を動かす。
@@ -443,6 +461,7 @@ export class SoftBody {
       this.solveShapeMatching(shapeK, uprightK, kv);
       this.solveGround(p.friction);
       if (this.boxes.length > 0) this.solveBoxes();
+      if (this.balls.length > 0) this.solveBalls();
 
       // 速度を更新する。元の形に戻る動き（シェイプマッチングの補正）は、
       // 弾みの割合だけを速度に残す（残りは位置だけを戻し、跳ね返りの勢いにしない）
@@ -1007,6 +1026,55 @@ export class SoftBody {
         pos[k] += ox * cs + oz * sn;
         pos[k + 2] += -ox * sn + oz * cs;
         contacts++;
+      }
+      b.contacts = contacts;
+    }
+  }
+
+  /**
+   * 玉の中に入った頂点を、横（水平）へ玉の外まで押し出し、押し出した分の share の割合だけ玉を反対へずらす。
+   * 上へは押し出さない（体が玉の上に乗らない。上からのしかかると、玉が横へ押し出される）
+   */
+  private solveBalls(): void {
+    const { pos, n } = this;
+    for (const b of this.balls) {
+      let contacts = 0, sx = 0, sz = 0, sw = 0;
+      const keep = 1 - b.share;
+      for (let i = 0; i < n; i++) {
+        const k = 3 * i;
+        const dy = pos[k + 1] - b.y;
+        if (dy >= b.r || dy <= -b.r) continue;
+        // その高さでの玉の断面の半径
+        const hr = Math.sqrt(b.r * b.r - dy * dy);
+        const dx = pos[k] - b.x, dz = pos[k + 2] - b.z;
+        const hd = Math.hypot(dx, dz);
+        if (hd >= hr) continue;
+        const pen = hr - hd;
+        // 真上・真下で向きが決まらなければ、体の重心から玉への向きの反対へ
+        let nx: number, nz: number;
+        if (hd > 1e-6) {
+          nx = dx / hd;
+          nz = dz / hd;
+        } else {
+          const c = this.center;
+          const ex = c.x - b.x, ez = c.z - b.z, el = Math.hypot(ex, ez) || 1;
+          nx = ex / el;
+          nz = ez / el;
+        }
+        pos[k] += nx * pen * keep;
+        pos[k + 2] += nz * pen * keep;
+        // 玉は深く入った頂点ほど強く押される（浅くかすっただけの頂点で平均を薄めない）
+        sx -= nx * pen * pen;
+        sz -= nz * pen * pen;
+        sw += pen;
+        contacts++;
+      }
+      if (sw > 0) {
+        const mx = (sx / sw) * b.share, mz = (sz / sw) * b.share;
+        b.x += mx;
+        b.z += mz;
+        b.moveX += mx;
+        b.moveZ += mz;
       }
       b.contacts = contacts;
     }

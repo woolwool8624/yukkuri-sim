@@ -350,7 +350,7 @@ export class Koro {
     const y = this.y;
     if (y.death.active || y.otabe.active || y.rest.active || y.puku.active || y.flee.active || y.vomit.active) return false;
     if (y.feeding.active || y.dishEat.active || y.toilet.active || y.cleanup.active || y.grill.active || y.dropping.active) return false;
-    if (y.exercise.active || y.moru.active || y.nestBuild.active || y.box.busy || y.branch.busy || y.forage.busy) return false;
+    if (y.exercise.active || y.moru.active || y.nestBuild.active || y.box.busy || y.branch.busy || y.forage.busy || y.ball.busy) return false;
     return !y.branch.holding;
   }
 
