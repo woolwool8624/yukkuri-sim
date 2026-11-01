@@ -136,13 +136,15 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
     });
   showInfo(y.presetId);
 
-  // パネルは目的ごとに 5 つの大見出しにまとめる：
+  // パネルは目的ごとに 6 つの大見出しにまとめる：
   //   体型プリセット … 体型の切り替え・保存・初期化
   //   場所           … マップ（平地・飼育ケース）と床材
-  //   させる         … 動き・体勢・ごはん・うんうん・吐餡・もるんもるんなど、押して動かすボタン（押したときの種類の指定も隣に置く）と、ぺにぺにの出し入れ
+  //   させる         … 押して動かすボタンを種類ごとに 5 つにまとめる（基本・暮らし・しぐさ・道具・遊び・ストレス・おしおき）。
+  //                    その動作だけの数値は、動作の見出しの中の「数値の調整」に置く（初めは閉じておく）
   //   見た目         … 顔・キャラクター・ぺにぺにの形・体の形・塗り・輪郭線
-  //   動きの調整     … 移動・柔らかさ・呼吸・うんうんの出る位置・吐餡の起き方
-  //   画面・カメラ   … つつく強さ・時間・カメラ
+  //   動きの調整     … 動作によらない体の動き（移動・柔らかさ・呼吸）
+  //   画面・カメラ   … 時間・カメラ
+  // 見出しは何層目かで見た目を変える（styleFolderLevels）。
   // 小見出しの名前はロックの保存名に使う。変えたら locks.ts の RENAMED に足して、前にロックした値を引き継ぐ
   const noLock = (c: { domElement: HTMLElement }) => c.domElement.classList.add('no-lock');
 
@@ -172,7 +174,8 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   const basic = doGroup.addFolder('基本');
   const living = doGroup.addFolder('暮らし');
   const gesture = doGroup.addFolder('しぐさ');
-  const tools = doGroup.addFolder('道具');
+  const tools = doGroup.addFolder('道具・遊び');
+  const ouch = doGroup.addFolder('ストレス・おしおき');
 
   const act = basic.addFolder('動き');
   act.add({ f: () => y.locomotion.stop() }, 'f').name('止まる');
@@ -192,7 +195,7 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   const greet = living.addFolder('あいさつ');
   noLock(greet.add(y.greet, 'declareFirst').name('動作の前に宣言する').onChange(() => y.greet.save()));
   noLock(greet.add(y.greet, 'textSize', 0.5, 3, 0.05).name('文字の大きさ(倍)').onChange(() => y.greet.save()));
-  noLock(greet.add(y.greet, 'bigSize', 1, 6, 0.1).name('ゆっくりしていってね！の大きさ(倍)').onChange(() => y.greet.save()));
+  noLock(greet.add(y.greet, 'bigSize', 1, 6, 0.1).name('ゆっくりしていってね！(倍)').onChange(() => y.greet.save()));
   greet.add({ f: () => y.greet.say('greetYukkuri') }, 'f').name('ゆっくりしていってね！');
   // おたべなさい：言ってから、帽子を脱いで横に置き、二つに割れる（戻すのはページの読み直し）
   greet.add({ f: () => { if (!y.otabe.active && !y.death.active && !y.rest.fainting) { y.greet.say('greetEatMe'); y.otabe.start(); } } }, 'f').name('おたべなさい！');
@@ -207,6 +210,14 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   // 眠るときは宣言してから（起こすときは宣言しない）
   rest.add({ f: () => (y.rest.sleeping ? y.rest.toggleSleep() : y.greet.declare('declareSleep', canAct, () => y.rest.sleep())) }, 'f').name('眠る／起こす');
   rest.add({ f: () => y.rest.faint() }, 'f').name('気絶させる');
+  // 眠る・気絶の柔らかさと気絶の長さ（全体で 1 つ。保存する）
+  const restTune = rest.addFolder('数値の調整');
+  const saveRest = () => y.rest.save();
+  noLock(restTune.add(y.rest.params, 'sleepSoft', 0, 1, 0.01).name('眠るときの硬さ(倍)').onChange(saveRest));
+  noLock(restTune.add(y.rest.params, 'sleepSkin', 1, 60, 1).name('眠るときの皮のゆるさ(倍)').onChange(saveRest));
+  noLock(restTune.add(y.rest.params, 'faintSoft', 0, 1, 0.01).name('気絶の硬さ(倍)').onChange(saveRest));
+  noLock(restTune.add(y.rest.params, 'faintSkin', 1, 60, 1).name('気絶の皮のゆるさ(倍)').onChange(saveRest));
+  noLock(restTune.add(y.rest.params, 'faintTime', 2, 60, 1).name('気絶の長さ(秒)').onChange(saveRest));
 
   // ごはん：食べ物を目の前に置くと、見つめる → むーしゃむーしゃ → しあわせー の順に食べる
   const meal = living.addFolder('ごはん');
@@ -255,16 +266,18 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
       () => y.exercise.start(exerciseOpts.pose === 'random' ? undefined : exerciseOpts.pose === 'prone')),
   }, 'f').name('うんうんたいそう');
   poo.add({ f: () => y.dropping.clear() }, 'f').name('片付ける');
-
-  // 吐餡：口から餡子を吐く（高い所から落ちたときも吐く）。吐いたものは「片付ける」まで残る
-  const vomit = living.addFolder('吐餡');
-  const saveVomit = () => y.vomit.save();
-  vomit.add({ f: () => y.vomit.start() }, 'f').name('吐餡する');
-  noLock(vomit.add(y.vomit.params, 'face', { ランダム: 'random', 白目: 'shock', 泣く: 'cry' }).name('顔').onChange(saveVomit));
-  vomit.add({ f: () => y.vomit.clear() }, 'f').name('片付ける');
+  // うんうんの出る位置：体型ごとに保存する（体型を切り替えるとその体型の値になるので、ロックは付けない）
+  const exit = poo.addFolder('出る位置');
+  const saveExit = () => y.dropping.saveExit();
+  noLock(exit.add(y.dropping, 'showExit').name('出る位置を表示'));
+  noLock(exit.add(y.dropping.exit, 'height', 0.05, 0.6, 0.01).name('高さ（背中側）').onChange(saveExit));
+  noLock(exit.add(y.dropping.exit, 'side', -1, 1, 0.01).name('左右（+で体の右）').onChange(saveExit));
+  noLock(exit.add(y.dropping.exit, 'frontHeight', 0.03, 0.4, 0.01).name('高さ（前から出すとき）').onChange(saveExit));
+  noLock(exit.add(y.dropping.exit, 'supineHeight', 0.2, 0.9, 0.01).name('高さ（寝転んで仰向け）').onChange(saveExit));
+  noLock(exit.add(y.dropping.exit, 'rolledHeight', 0.05, 0.6, 0.01).name('高さ（横に転がった仰向け）').onChange(saveExit));
 
   // ストレス：つつく・叩く・汚れの近くでたまり、上限で吐餡する（吐くと半分）。今の値を見る・いちばん低くする（下限のある体型は下限まで）
-  const stressDo = basic.addFolder('ストレス');
+  const stressDo = ouch.addFolder('ストレス');
   const stressView = { value: '' };
   stressDo.add(stressView, 'value').name('今のストレス').disable().listen();
   setInterval(() => {
@@ -272,6 +285,50 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
     stressView.value = `${s.value.toFixed(1)} / ${s.params.limit}${s.near ? '（汚れが近い）' : ''}`;
   }, 100);
   stressDo.add({ f: () => y.stress.reset() }, 'f').name('いちばん低くする');
+  // ストレスのたまり方（全体で 1 つ。保存する）
+  const stressTune = stressDo.addFolder('数値の調整');
+  const saveStress = () => y.stress.save();
+  noLock(stressTune.add(y.stress.params, 'limit', 10, 300, 1).name('吐餡するストレス').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'poke', 0, 10, 0.5).name('つつかれる(1回)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'slap', 0, 20, 0.5).name('叩かれる(1回)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'nearRate', 0, 10, 0.1).name('汚れの近く(1秒)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'nearDist', 0, 2, 0.05).name('近いとみなす距離(m)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'calmAfter', 0, 60, 1).name('減り始めるまで(秒)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'recover', 0, 5, 0.1).name('減る量(1秒)').onChange(saveStress));
+  // 食べ終えたときに減る量（今ある食べ物は中間品質だけなので、それだけ出す）
+  noLock(stressTune.add(y.stress.params.meal, 'normal', 0, 100, 1).name('食べて減る(中間品質)').onChange(saveStress));
+
+  // つつく・叩く：画面をクリック（叩くは Shift＋クリック）したときの強さと、倒れる・転がるまでの回数（回数は全体で 1 つ。保存する）
+  const pokeDo = ouch.addFolder('つつく・叩く');
+  pokeDo.add(view, 'pokeStrength', 0, 8, 0.1).name('つつく強さ');
+  pokeDo.add(view, 'slapStrength', 0, 12, 0.1).name('叩く強さ');
+  const pokeTune = pokeDo.addFolder('数値の調整');
+  const savePoke = () => y.poking.save();
+  noLock(pokeTune.add(y.poking.params, 'toppleHits', 1, 8, 0.5).name('立っていて倒れるまでの回数').onChange(savePoke));
+  noLock(pokeTune.add(y.poking.params, 'rollHits', 1, 8, 0.5).name('寝転んでいて転がるまでの回数').onChange(savePoke));
+  noLock(pokeTune.add(y.poking.params, 'slapWeight', 1, 4, 0.5).name('叩く1回はつつく何回分か').onChange(savePoke));
+
+  // 吐餡：口から餡子を吐く（高い所から落ちたとき・ストレスがたまったときも吐く）。吐いたものは「片付ける」まで残る
+  const vomit = ouch.addFolder('吐餡');
+  const saveVomit = () => y.vomit.save();
+  vomit.add({ f: () => y.vomit.start() }, 'f').name('吐餡する');
+  noLock(vomit.add(y.vomit.params, 'face', { ランダム: 'random', 白目: 'shock', 泣く: 'cry' }).name('顔').onChange(saveVomit));
+  vomit.add({ f: () => y.vomit.clear() }, 'f').name('片付ける');
+  const vomitTune = vomit.addFolder('数値の調整');
+  noLock(vomitTune.add(y.vomit.params, 'fallHeight', 0.3, 3, 0.05).name('吐く落下の高さ(m)').onChange(saveVomit));
+
+  // ホットプレート（足焼き）：乗せて焼き、「下ろす」まで焼く。焼いた時間の合計（秒）で跳ねられない・移動できない・死ぬ（戻すのはページの読み直し）
+  const grill = ouch.addFolder('ホットプレート');
+  grill.add({ f: () => y.grill.start() }, 'f').name('乗せて焼く');
+  grill.add({ f: () => y.grill.stop() }, 'f').name('下ろす');
+  const grillView = { state: '' };
+  grill.add(grillView, 'state').name('焼き加減').disable().listen();
+  setInterval(() => (grillView.state = y.grill.stateLabel), 200);
+  const grillTune = grill.addFolder('数値の調整');
+  const saveGrill = () => y.grill.save();
+  noLock(grillTune.add(y.grill.params, 'noHop', 1, 120, 1).name('跳ねられなくなる(秒)').onChange(saveGrill));
+  noLock(grillTune.add(y.grill.params, 'noMove', 1, 180, 1).name('移動できなくなる(秒)').onChange(saveGrill));
+  noLock(grillTune.add(y.grill.params, 'death', 1, 300, 1).name('焼け死ぬ(秒)').onChange(saveGrill));
 
   // もるんもるん：お尻を突き上げて左右に振る。振っている間に地面をクリックすると、そのまま這って行く
   const moru = gesture.addFolder('もるんもるん');
@@ -296,16 +353,16 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   noLock(moruTune.add(y.moru.params, 'contactSoft', 0.01, 1, 0.01).name('這うときの接地面の硬さ(倍)').onChange(moruContact));
   noLock(moruTune.add(y.moru.params, 'press', 0, 20, 0.5).name('這うときの押し付け').onChange(moruContact));
 
+  // ボール：マップごとに 1 個置いてある。立って何もしていない時間が続くと、自分から転がして遊ぶ
+  const ball = tools.addFolder('ボール');
+  ball.add(y.ball, 'auto').name('自分から遊ぶ');
+  ball.add({ f: () => y.ball.place() }, 'f').name('元の所に置き直す');
+
   // 段ボール箱：ボタンで体の前に出し、体ごと押して運ぶ（障害物）
   const box = tools.addFolder('箱');
   box.add({ f: () => y.box.spawn() }, 'f').name('箱を出す');
   box.add({ f: () => y.box.push() }, 'f').name('押す');
   box.add({ f: () => y.box.clear() }, 'f').name('片付ける');
-
-  // ボール：マップごとに 1 個置いてある。立って何もしていない時間が続くと、自分から転がして遊ぶ
-  const ball = tools.addFolder('ボール');
-  ball.add(y.ball, 'auto').name('自分から遊ぶ');
-  ball.add({ f: () => y.ball.place() }, 'f').name('元の所に置き直す');
 
   // 枝：ボタンで地面に出し、三つ編みで持つ（今は持つだけ）
   const branch = tools.addFolder('枝');
@@ -363,14 +420,6 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   const nestView = { count: '' };
   nest.add(nestView, 'count').name('地面の巣材').disable().listen();
   setInterval(() => (nestView.count = `たからもの ${y.nestStuff.count('treasure')}・べっど ${y.nestStuff.count('bedding')}（巣 ${y.nestStuff.list(true).length + y.forage.nestFoods(true).length}）`), 200);
-
-  // ホットプレート（足焼き）：乗せて焼き、「下ろす」まで焼く。焼いた時間で跳ねられない・移動できない・死ぬ（戻すのはページの読み直し）
-  const grill = tools.addFolder('ホットプレート');
-  grill.add({ f: () => y.grill.start() }, 'f').name('乗せて焼く');
-  grill.add({ f: () => y.grill.stop() }, 'f').name('下ろす');
-  const grillView = { state: '' };
-  grill.add(grillView, 'state').name('焼き加減').disable().listen();
-  setInterval(() => (grillView.state = y.grill.stateLabel), 200);
 
   // ぷくー：体をふくらませて威嚇する（ボタンで始める。もう一度押すとしぼむ）
   const puku = gesture.addFolder('ぷくー');
@@ -552,67 +601,18 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   life.add(y.life, 'breath', 0, 0.1, 0.001).name('大きさ');
   life.add(y.life, 'breathRate', 0.05, 1.5, 0.01).name('速さ');
 
-  // うんうんの出る位置：体型ごとに保存する（体型を切り替えるとその体型の値になるので、ロックは付けない）
-  const exit = tune.addFolder('うんうんの出る位置');
-  const saveExit = () => y.dropping.saveExit();
-  noLock(exit.add(y.dropping, 'showExit').name('出る位置を表示'));
-  noLock(exit.add(y.dropping.exit, 'height', 0.05, 0.6, 0.01).name('高さ（背中側）').onChange(saveExit));
-  noLock(exit.add(y.dropping.exit, 'side', -1, 1, 0.01).name('左右（+で体の右）').onChange(saveExit));
-  noLock(exit.add(y.dropping.exit, 'frontHeight', 0.03, 0.4, 0.01).name('高さ（前から出すとき）').onChange(saveExit));
-  noLock(exit.add(y.dropping.exit, 'supineHeight', 0.2, 0.9, 0.01).name('高さ（寝転んで仰向け）').onChange(saveExit));
-  noLock(exit.add(y.dropping.exit, 'rolledHeight', 0.05, 0.6, 0.01).name('高さ（横に転がった仰向け）').onChange(saveExit));
-
-  const vomitTune = tune.addFolder('吐餡の起き方');
-  noLock(vomitTune.add(y.vomit.params, 'fallHeight', 0.3, 3, 0.05).name('吐く落下の高さ(m)').onChange(saveVomit));
-
-  // 眠る・気絶の柔らかさと気絶の長さ（全体で 1 つ。保存する）
-  const restTune = tune.addFolder('眠る・気絶');
-  const saveRest = () => y.rest.save();
-  noLock(restTune.add(y.rest.params, 'sleepSoft', 0, 1, 0.01).name('眠るときの硬さ(倍)').onChange(saveRest));
-  noLock(restTune.add(y.rest.params, 'sleepSkin', 1, 60, 1).name('眠るときの皮のゆるさ(倍)').onChange(saveRest));
-  noLock(restTune.add(y.rest.params, 'faintSoft', 0, 1, 0.01).name('気絶の硬さ(倍)').onChange(saveRest));
-  noLock(restTune.add(y.rest.params, 'faintSkin', 1, 60, 1).name('気絶の皮のゆるさ(倍)').onChange(saveRest));
-  noLock(restTune.add(y.rest.params, 'faintTime', 2, 60, 1).name('気絶の長さ(秒)').onChange(saveRest));
-
-  // ストレスのたまり方（全体で 1 つ。保存する）
-  const stressTune = tune.addFolder('ストレスのたまり方');
-  const saveStress = () => y.stress.save();
-  noLock(stressTune.add(y.stress.params, 'limit', 10, 300, 1).name('吐餡するストレス').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'poke', 0, 10, 0.5).name('つつかれる(1回)').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'slap', 0, 20, 0.5).name('叩かれる(1回)').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'nearRate', 0, 10, 0.1).name('汚れの近く(1秒)').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'nearDist', 0, 2, 0.05).name('近いとみなす距離(m)').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'calmAfter', 0, 60, 1).name('減り始めるまで(秒)').onChange(saveStress));
-  noLock(stressTune.add(y.stress.params, 'recover', 0, 5, 0.1).name('減る量(1秒)').onChange(saveStress));
-  // 食べ終えたときに減る量（今ある食べ物は中間品質だけなので、それだけ出す）
-  noLock(stressTune.add(y.stress.params.meal, 'normal', 0, 100, 1).name('食べて減る(中間品質)').onChange(saveStress));
-
-  // つつく・叩く：倒れる・転がるまでの回数（全体で 1 つ。保存する）
-  // 足焼き：焼いた時間の合計（秒）で、跳ねられない・移動できない・死ぬ
-  const grillTune = tune.addFolder('足焼き');
-  const saveGrill = () => y.grill.save();
-  noLock(grillTune.add(y.grill.params, 'noHop', 1, 120, 1).name('跳ねられなくなる(秒)').onChange(saveGrill));
-  noLock(grillTune.add(y.grill.params, 'noMove', 1, 180, 1).name('移動できなくなる(秒)').onChange(saveGrill));
-  noLock(grillTune.add(y.grill.params, 'death', 1, 300, 1).name('焼け死ぬ(秒)').onChange(saveGrill));
-
-  const pokeTune = tune.addFolder('つつく・叩く');
-  const savePoke = () => y.poking.save();
-  noLock(pokeTune.add(y.poking.params, 'toppleHits', 1, 8, 0.5).name('立っていて倒れるまでの回数').onChange(savePoke));
-  noLock(pokeTune.add(y.poking.params, 'rollHits', 1, 8, 0.5).name('寝転んでいて転がるまでの回数').onChange(savePoke));
-  noLock(pokeTune.add(y.poking.params, 'slapWeight', 1, 4, 0.5).name('叩く1回はつつく何回分か').onChange(savePoke));
-
   // ---- 画面・カメラ ----
   const screen = gui.addFolder('画面・カメラ');
-  screen.add(view, 'pokeStrength', 0, 8, 0.1).name('つつく強さ');
-  screen.add(view, 'slapStrength', 0, 12, 0.1).name('叩く強さ（Shift＋クリック）');
   screen.add(view, 'timeScale', 0.05, 2, 0.05).name('時間の速さ');
   screen.add(view, 'paused').name('一時停止');
   screen.add(view, 'followCamera').name('カメラ追従');
   screen.add(view, 'freeCamera').name('カメラの角度制限を解除');
 
   // 最初に開いておくのは、よく使う「体型プリセット」と「させる」だけ（ほかの大見出しは、開いたときに小見出しが閉じて並ぶ）
-  for (const f of [looks, tune, screen, basic, living, gesture, tools]) f.close();
-  for (const f of [...looks.folders, ...tune.folders]) f.close();
+  // 動作ごとの「数値の調整」も閉じておく
+  for (const f of [looks, tune, screen, basic, living, gesture, tools, ouch]) f.close();
+  for (const f of [...looks.folders, ...tune.folders, restTune, exit, stressTune, pokeTune, vomitTune, grillTune]) f.close();
+  styleFolderLevels(gui);
   // 開いた・閉じた状態は保存して、次に開いたときも残す
   rememberFolders(gui);
 
@@ -642,6 +642,44 @@ function rememberFolders(gui: GUI): void {
     saved[pathOf(changed)] = !changed._closed;
     saveJSON(KEY, saved);
   });
+}
+
+/**
+ * 見出しに何層目かの印（lv1〜lv4。5 層目より深いものは lv4）を付け、層ごとに見た目を変える。
+ * lil-gui のままだと、どの層の見出しも同じ太字で並び、大見出しと中の見出しの見分けがつかなかった（指示）。
+ *   1 層目（大見出し）… 琥珀色の帯・大きい字
+ *   2 層目 … 青の帯。中身を字下げして青い線でくくる
+ *   3 層目 … 帯なし・緑の字。中身を緑の線でくくる
+ *   4 層目（数値の調整など）… 細い灰色の字・点線
+ */
+function styleFolderLevels(gui: GUI): void {
+  for (const f of gui.foldersRecursive()) {
+    let depth = 0;
+    for (let g: GUI | undefined = f; g && g !== gui; g = g.parent) depth++;
+    f.domElement.classList.add(`lv${Math.min(depth, 4)}`);
+  }
+  if (document.getElementById('gui-levels')) return;
+  const style = document.createElement('style');
+  style.id = 'gui-levels';
+  // lil-gui の入れ子の決まり（.lil-gui .lil-gui .lil-gui > .lil-children など）より強くするため、.lil-root から書く
+  const at = (lv: number) => `.lil-gui.lil-root .lil-gui.lv${lv}`;
+  style.textContent = `
+    ${at(1)} { margin-top: 2px; }
+    ${at(1)} > .lil-title {
+      background: #4a3a22; color: #ffd48a; font-size: 13px; height: calc(var(--title-height) + 4px);
+      border: 0 solid #e6a23c; border-left-width: 5px;
+    }
+    ${at(2)} > .lil-title {
+      background: #22303c; color: #a9d8ff; font-size: 12px;
+      border: 0 solid #4f9ad8; border-left-width: 4px;
+    }
+    ${at(2)} > .lil-children { margin-left: 6px; border-left: 2px solid rgba(79, 154, 216, 0.45); }
+    ${at(3)} > .lil-title { color: #bfe6a8; border: 0 solid #6dbb57; border-left-width: 3px; }
+    ${at(3)} > .lil-children { margin-left: 8px; border-left: 2px solid rgba(109, 187, 87, 0.4); }
+    ${at(4)} > .lil-title { color: #c4c4c4; font-weight: 400; border: 0 dotted #999; border-left-width: 2px; }
+    ${at(4)} > .lil-children { margin-left: 8px; border-left: 1px dotted #888; }
+  `;
+  document.head.appendChild(style);
 }
 
 /** 選んだ体型の名前と説明を画面左上に表示する */

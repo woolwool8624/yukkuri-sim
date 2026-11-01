@@ -20,6 +20,11 @@ const RENAMED: Record<string, string> = {
   '移動（地面をクリックで目的地）': '移動',
   '操作': '画面・カメラ',
 };
+/** 項目を別の見出しへ移したとき、前の保存名で保存したロックを引き継ぐ（前の「見出し/項目」 → 今の「見出し/項目」） */
+const MOVED: Record<string, string> = {
+  '画面・カメラ/つつく強さ': 'つつく・叩く/つつく強さ',
+  '画面・カメラ/叩く強さ（Shift＋クリック）': 'つつく・叩く/叩く強さ',
+};
 
 type Value = number | string | boolean;
 
@@ -133,11 +138,12 @@ export class LockManager {
   }
 }
 
-/** 前の見出しの名前で保存したロックの保存名を、今の見出しの名前にする */
+/** 前の見出しの名前・前の置き場所で保存したロックの保存名を、今の保存名にする */
 function renamed(key: string): string {
   const i = key.indexOf('/');
   const to = i < 0 ? undefined : RENAMED[key.slice(0, i)];
-  return to ? to + key.slice(i) : key;
+  const k = to ? to + key.slice(i) : key;
+  return MOVED[k] ?? k;
 }
 
 /** 表示専用（操作不可）の欄か。lil-gui の版によってクラス名に接頭辞 lil- が付く */
