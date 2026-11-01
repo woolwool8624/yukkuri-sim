@@ -1,6 +1,6 @@
 {
   "name": "yukkuri-sim",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "ゆっくり生態観察ゲーム（試作）",
   "scripts": {
     "dev": "vite",
