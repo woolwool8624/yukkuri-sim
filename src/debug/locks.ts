@@ -24,6 +24,7 @@ const RENAMED: Record<string, string> = {
 const MOVED: Record<string, string> = {
   '画面・カメラ/つつく強さ': 'つつく・叩く/つつく強さ',
   '画面・カメラ/叩く強さ（Shift＋クリック）': 'つつく・叩く/叩く強さ',
+  '移動/移動方法': '体型プリセット/移動方法',
 };
 
 type Value = number | string | boolean;

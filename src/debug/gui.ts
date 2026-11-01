@@ -63,6 +63,8 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   };
   pre.add(presetState, 'id', Object.fromEntries(allPresets().map((p) => [p.name, p.id]))).name('体型').onChange(applyPreset)
     .domElement.classList.add('no-lock');
+  // 移動方法：よく切り替えるので体型のすぐ下に置く（ほかの移動の数値は「動きの調整」→「移動」。指示）
+  pre.add(y.move, 'mode', { '跳ねる': 'hop', '這う': 'crawl', 'もるんもるん': 'moru', 'こーろこーろ': 'koro' }).name('移動方法');
   pre.add({
     f: () => {
       const name = findPreset(presetState.id)?.name ?? '';
@@ -137,12 +139,12 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   showInfo(y.presetId);
 
   // パネルは目的ごとに 6 つの大見出しにまとめる：
-  //   体型プリセット … 体型の切り替え・保存・初期化
+  //   体型プリセット … 体型の切り替え・移動方法・保存・初期化
   //   場所           … マップ（平地・飼育ケース）と床材
   //   させる         … 押して動かすボタンを種類ごとに 5 つにまとめる（基本・暮らし・しぐさ・道具・遊び・ストレス・おしおき）。
   //                    その動作だけの数値は、動作の見出しの中の「数値の調整」に置く（初めは閉じておく）
   //   見た目         … 顔・キャラクター・ぺにぺにの形・体の形・塗り・輪郭線
-  //   動きの調整     … 動作によらない体の動き（移動・柔らかさ・呼吸）
+  //   動きの調整     … 動作によらない体の動き（移動の数値・柔らかさ・呼吸）
   //   画面・カメラ   … 時間・カメラ
   // 見出しは何層目かで見た目を変える（styleFolderLevels）。
   // 小見出しの名前はロックの保存名に使う。変えたら locks.ts の RENAMED に足して、前にロックした値を引き継ぐ
@@ -568,7 +570,6 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   const tune = gui.addFolder('動きの調整');
 
   const mv = tune.addFolder('移動');
-  mv.add(y.move, 'mode', { '跳ねる': 'hop', '這う': 'crawl', 'もるんもるん': 'moru' }).name('移動方法');
   mv.add(y.move, 'canHop').name('跳ねられる体');
   mv.add(y.move, 'wander').name('自分でうろつく');
   mv.add(y.move, 'hopHeight', MIN_HOP_HEIGHT, 0.6, 0.01).name('跳ぶ高さ');

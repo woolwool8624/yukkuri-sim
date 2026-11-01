@@ -18,6 +18,11 @@ import type { Yukkuri } from './Yukkuri';
  *   柔らかさ：転がる間だけ、形に戻る強さ（SoftBody.softness）と皮のゆるさ（skinLoose）に掛ける倍率を変える
  *             （体型によっては、そのままだと固すぎて転がらない・柔らかすぎてつぶれる）
  *   保存：数値（時間・速さ・折り返す間隔・ゆらゆらの幅・前傾・柔らかさ）は体型ごと（指示）。転がり方・向き・自分から遊ぶは全体で 1 つ
+ *   移動（指示）：移動方法が「こーろこーろ」のとき、地面をクリックされた・うろつく行き先へ、宣言せずに転がって行く（travel）。
+ *             行き先が体の右か左の近い方へ転がり始め、転がりながら行き先へ向きを変える。立った向きになれるのは 1 回転ごとなので
+ *             （扁平型で約 3 m）、行き先にいちばん近い立った向きで起き上がり、その場で行き先へ向き直ってから、残りを跳ねる
+ *             （跳ねられなければ這う。転がり終えると行き先は体の真横に来るので、そのまま跳ねると行き先のまわりを回り続けた）。
+ *             1 回転で進む道のりの TRAVEL_MIN より近い行き先は、はじめから跳ねる・這う。速さ・前傾・柔らかさは一方向と同じ
  */
 export type KoroPattern = 'one' | 'shuttle' | 'sway' | 'random';
 export type KoroDir = 'right' | 'left' | 'random';
@@ -84,9 +89,24 @@ const UPRIGHT = 0.03;
 /** 前へ傾く（転がりながら）・体を起こすのにかける時間（秒） */
 const LEAN_TIME = 0.5;
 
+/** 移動：1 回転で進む道のりのこの割合より近い行き先は、転がらずに跳ねる・這う（これより遠ければ、1 回転した所の方が近い） */
+const TRAVEL_MIN = 0.6;
+/** 移動：起き上がった後に行き先へ向き直る速さ（rad/s）・向いたとみなす角度（rad）・あきらめる時間（秒） */
+const FACE_TURN = 2.5;
+const FACE_OK = 0.12;
+const FACE_MAX = 2;
+/** 移動：1 rad 転がって進む道のり（胴の半径に対する比）。測れるまでの見込み（その体型で前に測った値があればそれ） */
+const PER_RAD = 0.85;
+/** 移動：転がる向きを変える速さの上限（rad/s） */
+const STEER = 1.2;
+/** 移動：この時間（秒）行き先へ近づけなければ（壁などに当たって）起き上がる */
+const TRAVEL_STALL = 2.5;
+
+const Y_UP = new THREE.Vector3(0, 1, 0);
+
 const FACE_ROLL: Partial<PartSelection> = { eyes: 'smile', mouth: 'smile' };
 
-type Phase = 'none' | 'roll' | 'finish' | 'unlean' | 'after';
+type Phase = 'none' | 'roll' | 'finish' | 'unlean' | 'after' | 'face';
 
 export class Koro {
   private readonly saved = loadJSON<Partial<KoroParams>>(STORAGE_KEY);
@@ -110,6 +130,21 @@ export class Koro {
   private skin = 1;
   private face: Partial<PartSelection> | null = null;
   private word: Word | null = null;
+  /** 移動で転がっている（travel）か・行き先・起き上がる向き（回した角度）・近づけずにいる時間・転がり直した回数 */
+  private travel = false;
+  private readonly travelTo = new THREE.Vector3();
+  private finishTo: number | null = null;
+  private stall = 0;
+  private bestDist = Infinity;
+  /** 体型ごとの、前に測った 1 rad あたりに進む道のり（m） */
+  private readonly perRadOf: Record<string, number> = {};
+  /** 移動：転がった角度と進んだ道のり（1 rad あたりに進む道のりを測る） */
+  private rolled = 0;
+  private traveled = 0;
+  private readonly lastPos = new THREE.Vector3();
+  /** 移動：起き上がった後に向き直る向き（rad）と、その姿勢 */
+  private faceYaw: number | null = null;
+  private readonly facePose = new THREE.Quaternion();
 
   constructor(private readonly y: Yukkuri) {
     this.newWait();
@@ -118,6 +153,11 @@ export class Koro {
   /** 転がっている途中か（宣言の後、転がり始めてから起き上がって笑い終えるまで） */
   get active(): boolean {
     return this.phase !== 'none';
+  }
+
+  /** 移動で行き先へ転がっている途中か（行き先の印を出しておく） */
+  get travelling(): boolean {
+    return this.travel;
   }
 
   /** 転がっているか（転がり始めてから体を起こし終えるまで。起き上がって笑っている間は含まない） */
@@ -200,6 +240,8 @@ export class Koro {
     this.sign = p.dir === 'right' ? 1 : p.dir === 'left' ? -1 : Math.random() < 0.5 ? 1 : -1;
     // 決めた向きの先がふさがっていれば反対へ（どちらもふさがっていればそのまま）
     if (!this.room(this.sign) && this.room(-this.sign)) this.sign = -this.sign;
+    this.travel = false;
+    this.finishTo = null;
     this.angle = 0;
     this.flipIn = p.turnEvery;
     this.sayIn = 0.4;
@@ -211,12 +253,61 @@ export class Koro {
     return true;
   }
 
+  /**
+   * 移動で転がり始める（宣言しない）：行き先が体の右か左の近い方へ。近すぎる・ほかの動きの途中なら、跳ねる・這うに任せる
+   */
+  private startTravel(): void {
+    const y = this.y;
+    const loco = y.locomotion;
+    const to = loco.target;
+    const dx = to.x - y.center.x, dz = to.z - y.center.z;
+    if (this.active || !this.free() || y.hatFall.active || Math.hypot(dx, dz) < this.perRadGuess() * Math.PI * 2 * TRAVEL_MIN) {
+      loco.koroDecline();
+      return;
+    }
+    this.travelTo.set(to.x, 0, to.z);
+    if (!loco.koroBegin()) {
+      loco.koroDecline();
+      return;
+    }
+    this.travel = true;
+    this.beginRoll();
+    // 体から見て右＝ローカル -X のワールドの向き。行き先がそちらなら右へ
+    const yaw = y.body.yaw;
+    this.sign = -Math.cos(yaw) * dx + Math.sin(yaw) * dz >= 0 ? 1 : -1;
+  }
+
+  /** 転がり始めの数を揃える（遊ぶ・移動の共通） */
+  private beginRoll(): void {
+    const y = this.y;
+    this.pattern = 'one';
+    this.angle = 0;
+    this.finishTo = null;
+    this.flipIn = this.params.turnEvery;
+    this.sayIn = 0.4;
+    this.soft = y.body.softness;
+    this.skin = y.body.skinLoose;
+    this.stall = 0;
+    this.bestDist = Infinity;
+    this.rolled = 0;
+    this.traveled = 0;
+    this.lastPos.copy(y.center);
+    showFace(y, FACE_ROLL);
+    this.face = y.face.override;
+    this.go('roll');
+  }
+
   /** やめる（その場で起き上がる） */
   stop(): void {
     if (this.phase === 'none') return;
+    if (this.phase === 'face') {
+      this.endFace();
+      return;
+    }
     this.y.locomotion.koroEnd();
     this.clearFace();
     this.phase = 'none';
+    this.travel = false;
     this.newWait();
   }
 
@@ -226,6 +317,11 @@ export class Koro {
     const loco = y.locomotion;
     const p = this.params;
     if (this.phase === 'none') {
+      // 移動方法が「こーろこーろ」で、行き先へ向かいたい
+      if (loco.koroWanted) {
+        this.startTravel();
+        return;
+      }
       // 自分から遊ぶ：立って何もしていない時間が続いたら
       if (p.auto && this.free() && !loco.hasTarget && loco.idleTime > this.wait) {
         this.newWait();
@@ -234,6 +330,10 @@ export class Koro {
       return;
     }
     this.t += dt;
+    if (this.phase === 'face') {
+      this.faceTarget(dt);
+      return;
+    }
     if (this.phase === 'after') {
       if (this.t > AFTER_TIME) {
         this.clearFace();
@@ -241,6 +341,14 @@ export class Koro {
         this.newWait();
       }
       return;
+    }
+    // 移動の途中で行き先を指示し直された：こーろこーろで向かう行き先なら、そちらへ向かい直す
+    if (this.travel && loco.koroing && loco.hasTarget && this.phase === 'roll' && loco.koroWantedFor()) {
+      this.travelTo.set(loco.target.x, 0, loco.target.z);
+      loco.koroTake();
+      this.finishTo = null; // 起き上がる向きも決め直す
+      this.stall = 0;
+      this.bestDist = Infinity;
     }
     // ほかの動きに移った・行き先を指示された・つつかれて転がった：やめる
     if (!loco.koroing || loco.hasTarget || loco.held || !this.othersFree()) {
@@ -268,6 +376,18 @@ export class Koro {
       switch (this.pattern) {
         case 'one':
           this.angle += this.sign * w * dt;
+          if (this.travel && this.finishTo !== null) {
+            // 移動の最後の 1 回転：一方向と同じに前傾したまま同じ速さで転がり、立った向きに着いたら体を起こす
+            // （起き上がりの回し方（finish）は前傾せず速く回るので、1 回転だけの移動では前傾しないまま回って見えた）
+            this.aimRoll(dt);
+            if ((this.angle - this.finishTo) * this.sign >= 0) {
+              this.angle = this.finishTo;
+              loco.koroAngle = this.angle;
+              this.leanFrom = loco.koroLean;
+              this.go('unlean');
+              return;
+            }
+          } else if (this.travel) this.steer(dt, w);
           break;
         case 'shuttle':
           this.angle += this.sign * w * dt;
@@ -287,10 +407,10 @@ export class Koro {
         this.say(pick(ROLL_WORDS), 0.2, 1.4);
         this.sayIn = SAY_EVERY;
       }
-      if (this.t >= p.time) this.go('finish');
+      if (!this.travel && this.t >= p.time) this.go('finish');
     } else {
-      // 起き上がる：近い「立った向き」（1 回転ごと）まで回す
-      const target = Math.round(this.angle / (Math.PI * 2)) * Math.PI * 2;
+      // 起き上がる：近い「立った向き」（1 回転ごと）まで回す（移動では、決めておいた先の立った向きまで）
+      const target = this.finishTo ?? Math.round(this.angle / (Math.PI * 2)) * Math.PI * 2;
       const d = target - this.angle;
       const step = Math.max(w, Math.PI) * dt;
       if (Math.abs(d) <= Math.max(step, UPRIGHT)) {
@@ -306,12 +426,114 @@ export class Koro {
         return;
       }
       this.angle += Math.sign(d) * step;
+      if (this.travel) this.aimRoll(dt);
     }
     loco.koroAngle = this.angle;
   }
 
+  /**
+   * 移動：転がる向きを行き先へ回し、着く所で立った向きになるよう起き上がり始める所を決める
+   * （次の立った向きまでに進む道のりが、残りの道のりに届いたら起き上がる）。近づけなくなったら（壁などに当たって）起き上がる
+   */
+  private steer(dt: number, w: number): void {
+    const y = this.y;
+    const loco = y.locomotion;
+    const dx = this.travelTo.x - y.center.x, dz = this.travelTo.z - y.center.z;
+    const dist = Math.hypot(dx, dz);
+    const err = this.aimRoll(dt);
+    // 1 rad あたりに進む道のりを測る（体型ごとに覚えておく）
+    this.rolled += w * dt;
+    this.traveled += Math.hypot(y.center.x - this.lastPos.x, y.center.z - this.lastPos.z);
+    this.lastPos.copy(y.center);
+    if (this.rolled > 2) this.perRadOf[this.presetId] = this.traveled / this.rolled;
+    const perRad = this.perRadGuess();
+    const full = Math.PI * 2;
+    // 次の立った向き（転がる向きの先）
+    const next = this.sign > 0 ? Math.ceil(this.angle / full) * full : Math.floor(this.angle / full) * full;
+    const left = Math.abs(next - this.angle) * perRad;
+    // 次の立った向きの方が、その次より行き先に近い・行き先が後ろへ回った（通り過ぎた）：次の立った向きで起き上がる
+    if (left + full * perRad * 0.5 >= dist || dist <= loco.params.arriveRadius || Math.abs(err) > Math.PI * 0.75) {
+      this.finishTo = next; // ここからは roll のまま、この向きまで転がって体を起こす
+      return;
+    }
+    if (dist < this.bestDist - 0.02) {
+      this.bestDist = dist;
+      this.stall = 0;
+    } else if ((this.stall += dt) > TRAVEL_STALL) {
+      this.finishTo = null;
+      this.go('finish');
+    }
+  }
+
+  /** 移動：転がる向きを行き先へ回す（STEER まで）。回す前の、行き先とのずれ（rad）を返す */
+  private aimRoll(dt: number): number {
+    const y = this.y;
+    const loco = y.locomotion;
+    const dx = this.travelTo.x - y.center.x, dz = this.travelTo.z - y.center.z;
+    // 転がる向き：立った向きの、体から見て右（sign = 1）か左
+    const yaw = loco.koroYaw;
+    const heading = Math.atan2(-Math.cos(yaw) * this.sign, Math.sin(yaw) * this.sign);
+    const err = Math.atan2(Math.sin(Math.atan2(dx, dz) - heading), Math.cos(Math.atan2(dx, dz) - heading));
+    const max = STEER * dt;
+    // 行き先が後ろへ回った（通り過ぎた）ときは回さない
+    if (Math.abs(err) < Math.PI / 2) loco.koroSteer(Math.max(-max, Math.min(max, err)));
+    return err;
+  }
+
+  /** 移動：起き上がったら、その場で行き先へ向き直り、残りを跳ねる（跳ねられなければ這う）。もう着いていれば終わる */
+  private faceTarget(dt: number): void {
+    const y = this.y;
+    const loco = y.locomotion;
+    // 行き先を指示し直された・ほかの動きが始まった：任せる
+    if (loco.hasTarget || loco.held || !this.othersFree()) {
+      this.endFace();
+      return;
+    }
+    if (loco.tilted || !loco.idle) {
+      this.t = 0; // 体勢を立て直している間は待つ
+      return;
+    }
+    const dx = this.travelTo.x - y.center.x, dz = this.travelTo.z - y.center.z;
+    if (Math.hypot(dx, dz) <= loco.params.arriveRadius) {
+      this.endFace();
+      return;
+    }
+    const want = Math.atan2(dx, dz);
+    this.faceYaw ??= y.body.yaw;
+    const d = Math.atan2(Math.sin(want - this.faceYaw), Math.cos(want - this.faceYaw));
+    this.faceYaw += Math.sign(d) * Math.min(Math.abs(d), FACE_TURN * dt);
+    this.facePose.setFromAxisAngle(Y_UP, this.faceYaw);
+    loco.gesture = { orientation: this.facePose, squash: 1 };
+    const err = Math.abs(Math.atan2(Math.sin(want - y.body.yaw), Math.cos(want - y.body.yaw)));
+    if ((err < FACE_OK && Math.abs(d) < 1e-3) || this.t > FACE_MAX) {
+      this.endFace();
+      loco.moveTo(this.travelTo.x, this.travelTo.z, 'hop');
+    }
+  }
+
+  private endFace(): void {
+    const loco = this.y.locomotion;
+    if (loco.gesture?.orientation === this.facePose) loco.gesture = null;
+    this.phase = 'none';
+    this.newWait();
+  }
+
+  /** 1 rad 転がって進む道のり（m）の見込み */
+  private perRadGuess(): number {
+    return this.perRadOf[this.presetId] ?? this.y.shape.radius * PER_RAD;
+  }
+
   /** 転がり終えて立つ（体勢を立て直す）→ひとこと */
   private end(): void {
+    if (this.travel) {
+      // 移動：ひとことは言わずに立ち、行き先へ向き直ってから残りを跳ねる（faceTarget）
+      this.y.locomotion.koroEnd();
+      this.clearFace();
+      this.travel = false;
+      this.faceYaw = null;
+      this.go('face');
+      return;
+    }
     this.y.locomotion.koroEnd();
     this.say(this.y.line('koroDone'), 0.22, 1.8);
     this.go('after');

@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import type { SoftBody } from '../physics/SoftBody';
 
-export type MoveMode = 'hop' | 'crawl' | 'moru';
+export type MoveMode = 'hop' | 'crawl' | 'moru' | 'koro';
 
 export interface LocomotionParams {
   /** 移動方法：跳ねる・這う・もるんもるん（お尻を突き上げて左右に振りながら這う） */
@@ -286,6 +286,11 @@ export class Locomotion {
    * 着いた・止めた・ほかの行き先を指定したら戻る。もるんもるんの最中はそちらが優先
    */
   private targetMode: MoveMode | null = null;
+  /**
+   * 今の行き先は、地面をクリックされた・自分でうろつく行き先か（goTo）。移動方法が「こーろこーろ」でも転がって行くのはこの行き先だけ
+   * （ほかの動き（皿へ行く・ボールを追うなど）は決まった所へぴったり着きたいので、跳ねる・這う）
+   */
+  private freeMove = false;
   private state: State = 'idle';
   private t = 0;
   private airborne = false;
@@ -688,6 +693,20 @@ export class Locomotion {
     return true;
   }
 
+  /** こーろこーろで転がる向きを、真上の軸のまわりに dyaw だけ回す（転がりながら行き先へ向きを変える。姿勢の指令ごと回す） */
+  koroSteer(dyaw: number): void {
+    if (this.state !== 'koro') return;
+    this._lq.setFromAxisAngle(Y_AXIS, dyaw);
+    this.koroStart.premultiply(this._lq);
+    this.koroAxis.applyAxisAngle(Y_AXIS, dyaw);
+    this.koroLeanAxis.applyAxisAngle(Y_AXIS, dyaw);
+  }
+
+  /** こーろこーろで、立った向き（始めた向き。koroSteer で回した分を含む）の yaw（rad） */
+  get koroYaw(): number {
+    return Math.atan2(this.koroAxis.x, this.koroAxis.z);
+  }
+
   /** こーろこーろを終える：立った向きへ戻す（途中でやめたときは、体勢を立て直すのに任せる） */
   koroEnd(): void {
     if (this.state !== 'koro') return;
@@ -740,14 +759,49 @@ export class Locomotion {
     this.target.set(x, 0, z);
     this.limit?.(this.target);
     this.targetMode = mode;
+    this.freeMove = false;
     this.idleFor = 0;
     if (this.holding) this.deferred = true;
     else this.hasTarget = true;
   }
 
+  /** 地面をクリックされた・自分でうろつく行き先を決める（移動方法が「こーろこーろ」なら転がって行く。Koro が運ぶ） */
+  goTo(x: number, z: number, mode: MoveMode | null = null): void {
+    this.moveTo(x, z, mode);
+    this.freeMove = !this.immobile;
+  }
+
+  /** 今の行き先へ向かう移動方法（「こーろこーろ」は goTo の行き先だけ。ほかは跳ねる＝跳ねられなければ這う） */
+  private modeNow(): MoveMode {
+    const mode = this.targetMode ?? this.params.mode;
+    return mode === 'koro' && !this.freeMove ? 'hop' : mode;
+  }
+
+  /** 立って止まっていて、こーろこーろで行き先へ向かいたい（Koro が転がって運ぶ。運べなければ koroDecline） */
+  get koroWanted(): boolean {
+    return this.state === 'idle' && this.hasTarget && !this.moru && this.modeNow() === 'koro'
+      && Math.hypot(this.target.x - this.body.center.x, this.target.z - this.body.center.z) > this.params.arriveRadius;
+  }
+
+  /** こーろこーろで転がっている途中に、こーろこーろで向かう行き先を指示し直された */
+  koroWantedFor(): boolean {
+    return this.state === 'koro' && this.hasTarget && this.modeNow() === 'koro';
+  }
+
+  /** 指示し直された行き先を Koro が引き取った（転がったまま向かうので、移動の処理は行き先を持たない） */
+  koroTake(): void {
+    this.hasTarget = false;
+  }
+
+  /** こーろこーろで運べない（近すぎる・ほかの動きの途中など）：この行き先は跳ねる（跳ねられなければ這う）で向かう */
+  koroDecline(): void {
+    this.targetMode = 'hop';
+  }
+
   stop(): void {
     this.hasTarget = false;
     this.targetMode = null;
+    this.freeMove = false;
     this.deferred = false;
   }
 
@@ -985,12 +1039,14 @@ export class Locomotion {
         if (!this.hasTarget && p.wander && !this.holding && this.idleFor > this.idleWait) {
           const a = Math.random() * Math.PI * 2;
           const r = Math.sqrt(Math.random()) * p.wanderRadius;
-          this.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+          this.goTo(Math.cos(a) * r, Math.sin(a) * r);
           break; // 新しい行き先への判断は次のステップで行う
         }
         // 向きを変えてから動くのではなく、すぐに動き出して進みながら向きを変える
-        if (needsMove) this.go(this.moveState());
-        else if (this.hasTarget) this.arrive();
+        // こーろこーろで向かうときは、Koro が転がり始めるのを待つ
+        if (needsMove) {
+          if (this.modeNow() !== 'koro' || this.moru) this.go(this.moveState());
+        } else if (this.hasTarget) this.arrive();
         else if (this.gesture) {
           // 身ぶり：指令の姿勢へなめらかに寄せ、縦に伸び縮みする
           act.orientation = this.gesture.orientation;
@@ -1233,8 +1289,10 @@ export class Locomotion {
   }
 
   private moveState(): State {
-    const mode = this.targetMode ?? this.params.mode;
+    const mode = this.modeNow();
     if (this.moru || mode === 'moru') return 'moru';
+    // こーろこーろで向かう：立ち止まって Koro が転がり始めるのを待つ（跳ねる・這う途中に指示し直されたときは、その 1 回を終えてから）
+    if (mode === 'koro') return 'idle';
     return mode === 'hop' && this.params.canHop && !this.noHop ? 'crouch' : 'crawl';
   }
 
@@ -1291,6 +1349,7 @@ export class Locomotion {
   private arrive(): void {
     this.hasTarget = false;
     this.targetMode = null;
+    this.freeMove = false;
     this.go('idle');
   }
 

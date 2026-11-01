@@ -132,7 +132,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     return;
   }
   const g = raycaster.intersectObject(ground, false)[0];
-  if (g) yukkuri.locomotion.moveTo(g.point.x, g.point.z, e.shiftKey ? 'hop' : e.altKey ? 'crawl' : e.ctrlKey ? 'moru' : null);
+  if (g) yukkuri.locomotion.goTo(g.point.x, g.point.z, e.shiftKey ? 'hop' : e.altKey ? 'crawl' : e.ctrlKey ? 'moru' : null);
 });
 
 const drawSize = new THREE.Vector2();
@@ -165,7 +165,7 @@ renderer.setAnimationLoop(() => {
   }
   yukkuri.sync();
   // 食べている間に指示された行き先も出しておく（食べ終わってから向かう）
-  marker.visible = yukkuri.locomotion.hasTarget || yukkuri.locomotion.deferred;
+  marker.visible = yukkuri.locomotion.hasTarget || yukkuri.locomotion.deferred || yukkuri.koro.travelling;
   marker.position.x = yukkuri.locomotion.target.x;
   marker.position.z = yukkuri.locomotion.target.z;
 
