@@ -348,7 +348,8 @@ export class Koro {
   private free(): boolean {
     const loco = this.y.locomotion;
     if (loco.held || loco.tilted || loco.immobile || loco.gesture || loco.moru) return false;
-    return this.othersFree() && !this.y.greet.busy;
+    // 挟まって起き上がれずにいる間は転がらない（傾いたまま立っているときも）
+    return this.othersFree() && !this.y.greet.busy && !this.y.wedge.stuck;
   }
 
   /** ほかの動きをしていないか */

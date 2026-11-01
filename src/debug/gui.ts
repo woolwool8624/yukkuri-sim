@@ -293,6 +293,7 @@ export function createDebugGui(y: Yukkuri, view: ViewSettings): GUI {
   noLock(stressTune.add(y.stress.params, 'slap', 0, 20, 0.5).name('叩かれる(1回)').onChange(saveStress));
   noLock(stressTune.add(y.stress.params, 'nearRate', 0, 10, 0.1).name('汚れの近く(1秒)').onChange(saveStress));
   noLock(stressTune.add(y.stress.params, 'nearDist', 0, 2, 0.05).name('近いとみなす距離(m)').onChange(saveStress));
+  noLock(stressTune.add(y.stress.params, 'stuckRate', 0, 20, 0.5).name('挟まっている(1秒)').onChange(saveStress));
   noLock(stressTune.add(y.stress.params, 'calmAfter', 0, 60, 1).name('減り始めるまで(秒)').onChange(saveStress));
   noLock(stressTune.add(y.stress.params, 'recover', 0, 5, 0.1).name('減る量(1秒)').onChange(saveStress));
   // 食べ終えたときに減る量（今ある食べ物は中間品質だけなので、それだけ出す）

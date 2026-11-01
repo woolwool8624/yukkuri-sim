@@ -286,6 +286,19 @@ export class HatStash {
     this.go('turn');
   }
 
+  /** 帽子を手に持っている途中か（頭へ戻る途中・かぶり終えて放すところは含まない） */
+  get picking(): boolean {
+    return this.active && this.phase !== 'snap' && this.phase !== 'letGo2';
+  }
+
+  /** やめる。帽子は今の所に置いたまま（帽子をどうするかは呼ぶ側が決める。hat.carry はそのまま） */
+  abort(): void {
+    if (!this.active) return;
+    this.releaseBody();
+    this.phase = 'idle';
+    this.hooks = null;
+  }
+
   /** やめる（帽子は頭へ戻る） */
   cancel(): void {
     if (!this.active || this.phase === 'snap') return;

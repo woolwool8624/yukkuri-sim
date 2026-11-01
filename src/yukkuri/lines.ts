@@ -22,6 +22,7 @@ export type LineKey =
   | 'boxGo' | 'boxPush' | 'boxDone' | 'boxStuck' | 'boxBump'
   | 'ballGo' | 'ballKick' | 'ballChase' | 'ballDone' | 'ballStuck' | 'ballNudge'
   | 'koroDone'
+  | 'stuckStart' | 'stuckStruggle' | 'stuckPain' | 'stuckAgony' | 'stuckFree'
   | 'dishNone' | 'dishEmpty' | 'waterNone'
   | 'cleanNoToilet' | 'cleanNone' | 'cleanPick' | 'cleanDone'
   | 'nestNoHome' | 'nestNone' | 'nestBed' | 'nestTreasure' | 'nestFood' | 'nestDone'
@@ -116,6 +117,11 @@ const COMMON: Lines = {
   ballStuck: ['ゆぅ…ぼーるさんがとれないよ…', 'すみっこにはいっちゃったよ…'],
   ballNudge: ['ぐりぐり…', 'ゆ〜っ…でておいで〜', 'すみっこからだしてあげるよ！'],
   koroDone: ['ゆっくりころがったよ！', 'ゆふ〜♪', 'めがまわるよ〜', 'たのしかったよ！'],
+  stuckStart: ['ゆっ！？おきあがれないよ！', 'ゆゆっ！？はさまっちゃったよ！', 'ゆ…うごけないよ…！？'],
+  stuckStruggle: ['ゆ…ゆんしょ…！', 'ゆぐぐぐ…！', 'ゆぎぃ…おきあがれないぃ…', 'ぬけられないよぉ…！', 'ゆっ…ゆっ…だめだよ…'],
+  stuckPain: ['せまいよ…くるしいよ…', 'ゆぅ…からだがいたいよ…', 'だれか…たすけてね…', 'ゆっくりできないよぉ…', 'おうちかえる…'],
+  stuckAgony: ['ぐ…ぐるじいぃ…', 'あ…あんこさんが…でちゃうぅ…', 'だずげでぇぇ…', 'ゆ゛…ゆ゛ぅ…', 'ゆっぐりでぎないぃ…'],
+  stuckFree: ['ゆ…ぬけだせたよ…！', 'ゆふぅ…たすかったよ…', 'ゆっくりできるよ…！'],
   declarePoo: ['うんうんするよ！'],
   declareExercise: ['うんうんたいそうはじまるよ！'],
   declareMeal: ['すーぱーむしゃむしゃたいむはじまるよ！'],
@@ -213,6 +219,11 @@ const MARISA_NOZE: Partial<Lines> = {
   ballStuck: ['ゆぅ…ぼーるさんがとれないのぜ…', 'すみっこにはまったのぜ…'],
   ballNudge: ['ぐりぐり…', 'ゆ〜っ…でてくるのぜ〜', 'まりさがだしてやるのぜ！'],
   koroDone: ['ゆっくりころがったのぜ！', 'ゆふ〜♪', 'めがまわるのぜ〜', 'たのしかったのぜ！'],
+  stuckStart: ['ゆっ！？おきあがれないのぜ！', 'ゆゆっ！？はさまっちゃったのぜ！', 'ゆ…うごけないのぜ…！？'],
+  stuckStruggle: ['ゆ…ゆんしょ…なのぜ…！', 'ゆぐぐぐ…！', 'ゆぎぃ…おきあがれないのぜぇ…', 'ぬけられないのぜぇ…！', 'ゆっ…ゆっ…だめなのぜ…'],
+  stuckPain: ['せまいのぜ…くるしいのぜ…', 'ゆぅ…からだがいたいのぜ…', 'だれか…たすけるのぜ…', 'ゆっくりできないのぜぇ…', 'おうちかえるのぜ…'],
+  stuckAgony: ['ぐ…ぐるじいのぜぇ…', 'あ…あんこさんが…でちゃうのぜぇ…', 'だずげでほじいのぜぇ…', 'ゆ゛…ゆ゛ぅ…', 'ゆっぐりでぎないのぜぇ…'],
+  stuckFree: ['ゆ…ぬけだせたのぜ…！', 'ゆふぅ…たすかったのぜ…', 'ゆっくりできるのぜ…！'],
   declarePoo: ['うんうんするのぜ！'],
   declareExercise: ['うんうんたいそうはじまるのぜ！'],
   declareMeal: ['すーぱーむしゃむしゃたいむはじまるのぜ！'],

@@ -470,6 +470,7 @@ export class Ball {
     if (y.death.active || y.otabe.active || y.rest.active || y.puku.active || y.flee.active || y.vomit.active) return false;
     if (y.feeding.active || y.dishEat.active || y.toilet.active || y.cleanup.active || y.grill.active || y.dropping.active) return false;
     if (y.exercise.active || y.moru.active || y.nestBuild.active || y.box.busy || y.branch.busy || y.forage.busy || y.greet.busy || y.koro.active) return false;
+    if (y.wedge.stuck) return false; // 挟まって起き上がれずにいる間は遊ばない
     return !y.branch.holding;
   }
 

@@ -29,6 +29,7 @@ import { Koro } from './koro';
 import { PushBox } from './box';
 import { HatBump } from './hatBump';
 import { HatFall } from './hatFall';
+import { Wedge } from './wedge';
 import { Greet } from './greet';
 import { Death } from './death';
 import { Otabe } from './otabe';
@@ -136,6 +137,8 @@ export class Yukkuri {
   readonly hatBump: HatBump;
   /** 帽子が壁と体に挟まって大きく入ったら頭から落とし、拾ってかぶり直す */
   readonly hatFall: HatFall;
+  /** 挟まって起き上がれない（こーろこーろの後に皿の間・角などで） */
+  readonly wedge: Wedge;
   /** ボール（マップごとに 1 個。体と押し合い、自分から転がして遊ぶ） */
   readonly ball: Ball;
   /** こーろこーろ（宣言して横に転がって遊ぶ） */
@@ -244,6 +247,7 @@ export class Yukkuri {
     this.box = new PushBox(this);
     this.hatBump = new HatBump(this);
     this.hatFall = new HatFall(this);
+    this.wedge = new Wedge(this);
     this.ball = new Ball(this);
     this.koro = new Koro(this);
     this.greet = new Greet(this);
@@ -529,6 +533,7 @@ export class Yukkuri {
     // 寝返りで横へずれてから起き上がる：寝返りが終わったら、まだ塊に近ければもう一度、離れていれば起き上がる
     if (this.rollingAside && this.locomotion.resting) this.getUp();
     this.watchFall();
+    this.wedge.update(dt); // 挟まっている間のストレスは、ストレスの処理（上限で吐かせる）より先に足す
     this.stress.update(dt); // 上限に届いたら吐き始めるので、吐餡より先に
     this.flee.update(dt); // 汚れが近いかはストレスが調べる
     this.rest.update(dt); // 眠る・気絶（ほかの動きが始まったら起こすので、それらの後の判断で足りる）

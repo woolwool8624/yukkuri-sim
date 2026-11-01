@@ -457,6 +457,7 @@ export class Locomotion {
    */
   private fallOver(): void {
     const b = this.body;
+    this.falls++;
     this.hasTarget = false;
     this.reachedFor = 0;
     this.proneAfterRoll = false;
@@ -705,6 +706,8 @@ export class Locomotion {
     return this.state === 'lieDown' || this.state === 'lying';
   }
 
+  /** 自分で倒れた（立ち直れずに傾きが FALLEN を超えた）回数（挟まって起き上がれないのを見分けるのに使う。Wedge） */
+  falls = 0;
   /** つつかれて転がって立ち上がった回数（足焼き：ホットプレートの上で立ったかを見るのに使う） */
   knockStands = 0;
   /** 次に起き上がるのを速く（跳ね起きる。うんうんの後のすっきりー）。起き上がり終えたら戻す */

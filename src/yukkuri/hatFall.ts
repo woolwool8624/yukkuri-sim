@@ -30,6 +30,8 @@ type Phase = 'idle' | 'fall' | 'wait' | 'pick';
  * （WitchHat.bendAgainst）が、それでも壁か体へ大きく（FALL_AT）入るときは、帽子を外して床へ落とす。
  *   落ちる（壁と体から離れた所へ、かぶる向きのまま）→ 転がるのをすぐやめて、驚いた顔で「おぼうしさん！」→
  *   起き上がったら拾いに行ってかぶり直す（HatStash.pickUp）→「ゆっくりかぶったよ！」
+ * 挟まって起き上がれない間（Wedge）・吐餡している間は拾わない（指示。もがいて一瞬立った隙に拾いに行き、吐きながらかぶり直していた）。
+ * 拾っている途中でそうなったら、帽子は落ちていた所へ戻して待つ（頭へ戻すと、挟まったまま帽子だけかぶり直したように見える）
  */
 export class HatFall {
   private phase: Phase = 'idle';
@@ -86,8 +88,8 @@ export class HatFall {
       case 'wait': {
         hat.carry = this.carry.copy(this.ground);
         const loco = y.locomotion;
-        // 起き上がって落ち着いたら拾いに行く
-        if (y.koro.active || loco.isLying || loco.tilted || !loco.idle) this.t = 0;
+        // 起き上がって落ち着いたら拾いに行く（挟まって起き上がれない間・吐いている間は拾わない）
+        if (y.koro.active || loco.isLying || loco.tilted || !loco.idle || this.busy()) this.t = 0;
         if (this.t >= PICK_WAIT && this.stash.pickUp(this.ground, {
           onDone: () => {
             this.phase = 'idle';
@@ -105,10 +107,23 @@ export class HatFall {
         break;
       }
       case 'pick':
+        // 拾っている途中で挟まった・吐き始めた・倒れた：帽子は落ちていた所へ戻して待つ
+        if (this.stash.picking && (this.busy() || y.locomotion.isLying)) {
+          this.stash.abort();
+          this.from.copy(hat.carry ?? hat.object.matrix);
+          hat.lined = false;
+          this.go('fall');
+          break;
+        }
         this.stash.update(dt);
         if (!this.stash.active) this.phase = 'idle';
         break;
     }
+  }
+
+  /** 拾いに行けない（挟まって起き上がれない・吐いている） */
+  private busy(): boolean {
+    return this.y.wedge.stuck || this.y.vomit.active;
   }
 
   /** 帽子を頭から外して落とし始める */

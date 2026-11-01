@@ -8,6 +8,7 @@ import type { Yukkuri } from './Yukkuri';
  *   ・つつかれる … 1 回 poke（つつくを 1 として数える）
  *   ・叩かれる   … 1 回 slap
  *   ・うんうん・吐いた餡子の近くにいる … 1 秒あたり nearRate（体の縁から nearDist m 以内）
+ *   ・挟まって起き上がれない … 1 秒あたり stuckRate（Wedge が足す。挟まったまま上限に届くと、吐いた後に死ぬ）
  * 吐いている・うんうんしている間は、近くの汚れでたまらない（自分が出している最中のもので増えないように）。
  * 上限に届いても吐けないとき（うんうんの最中など）は、上限のまま待って吐けるようになったら吐く。
  * 食べ物を食べ終える（しあわせー）と、食べ物の品質に応じて params.meal だけ減る（途中でやめたら減らない）。
@@ -24,6 +25,8 @@ export interface StressParams {
   nearRate: number;
   /** 「近く」とみなす距離（体の縁から。m） */
   nearDist: number;
+  /** 挟まって起き上がれないとき、1 秒あたりに足す量 */
+  stuckRate: number;
   /** ストレスを受けないままこの時間（秒）たったら減り始める */
   calmAfter: number;
   /** 減り始めてから、1 秒あたりに減る量 */
@@ -34,7 +37,7 @@ export interface StressParams {
 /** 食べ終えたときに減る量の初期値。今あるのは中間品質だけ。低品質・高品質は仮の値（種類を足すときに決める） */
 const DEFAULT_MEAL: Record<FoodQuality, number> = { low: 5, normal: 20, high: 40 };
 export const DEFAULT_STRESS: StressParams = {
-  limit: 100, poke: 1, slap: 2, nearRate: 1, nearDist: 0.5, calmAfter: 10, recover: 0.5, meal: { ...DEFAULT_MEAL },
+  limit: 100, poke: 1, slap: 2, nearRate: 1, nearDist: 0.5, stuckRate: 3, calmAfter: 10, recover: 0.5, meal: { ...DEFAULT_MEAL },
 };
 const STORAGE_KEY = 'stress';
 /** 体型ごとのストレスの下限（書いていない体型は 0。ボール型・たまご型・ユーザー設定）。値は指示 */
@@ -103,7 +106,10 @@ export class Stress {
     if (!this.near && this.calmFor >= this.params.calmAfter) this.value = Math.max(this.floor, this.value - this.params.recover * dt);
     // 上限に届いたら吐く（吐けなければ、吐けるようになるまで毎ステップ試す）。
     // 上限を下限以下にしたときは吐かない（吐いても下限＝上限のままで、吐き続けてしまう）
-    if (this.value >= this.params.limit && this.floor < this.params.limit && !y.vomit.active) y.vomit.start();
+    if (this.value >= this.params.limit && this.floor < this.params.limit && !y.vomit.active) {
+      y.wedge.doom(); // 挟まって起き上がれないまま届いたら、吐いた後に死ぬ
+      y.vomit.start();
+    }
   }
 
   /** うんうん・吐いた餡子のどれかが、体の縁から nearDist 以内にあるか（水平に見る） */
