@@ -34,6 +34,8 @@ export const UPRIGHT_HEIGHT = 0.14;
 const UPRIGHT_GAP = 0.6;
 /** ひっくり返す途中に持ち上げる高さ（胴の半径に対する比） */
 const ARC = 0.55;
+/** かぶる向きのまま運ぶとき、体の前を通るつばと顔の間にあける隙間（胴の半径に対する比） */
+const FRONT_GAP = 0.12;
 /** 時間（秒）：つかむ・脱ぐ（かぶる）・放す・頭へ戻る（やめたとき） */
 const GRAB_TIME = 0.45;
 const FLIP_TIME = 1.3;
@@ -86,6 +88,13 @@ export class HatStash {
   private readonly putCenter = new THREE.Vector3();
   private putRim = 0;
   private turnSign = 1;
+  /** かぶる向きのまま運ぶとき、水平に回す角度（rad。符号が回す向き。yawPlan） */
+  private turnYaw = Math.PI;
+  /** flipPose で、体の前を通す間に前へ逃がすか（回す角度を選ぶ間は止める） */
+  private pushFront = true;
+  /** 体の前への張り出し（m。measureFront） */
+  private faceFront = 0;
+  private readonly tmp = new THREE.Vector3();
   /** 広い所へ移った回数と、その行き先 */
   private clearTries = 0;
   private readonly clearTo = new THREE.Vector3();
@@ -228,7 +237,7 @@ export class HatStash {
     this.sideSign = braidSide(y).dot(right) >= 0 ? 1 : -1;
     this.side.copy(right).multiplyScalar(this.sideSign);
     this.heading = y.body.yaw;
-    // つかむ所：つばの、ゆっくりに一番近い側
+    // つかむ所：つばの、ゆっくりに一番近い側（かぶったときに三つ編みの側に来る所をつかむと、帽子の向こう側へ回り込もうとして帽子を踏み越えた）
     const d = y.center.clone().applyMatrix4(ground.clone().invert());
     hat.brimLocal(Math.atan2(d.x, d.z), GRAB_R, this.grabLocal);
     const g = this.grabLocal.clone().applyMatrix4(ground);
@@ -406,7 +415,14 @@ export class HatStash {
         braid.reachTarget.copy(this.grabLocal).applyMatrix4(this.ground);
         braid.reachAmount = k;
         y.lookAt(braid.reachTarget);
-        if (this.t >= GRAB_TIME) this.go('on');
+        if (this.t >= GRAB_TIME) {
+          // 回す向きは、戻って向き直った今の体で決め直す（拾うときは脱いでいないので、まだ決めていない）
+          if (this.upright) {
+            const g = new THREE.Vector3().setFromMatrixPosition(this.ground);
+            this.yawPlan(hat.worn, g.sub(this.grabLocal.clone().applyMatrix4(this.ground)));
+          }
+          this.go('on');
+        }
         break;
       }
       case 'on': {
@@ -440,10 +456,35 @@ export class HatStash {
     const move = smooth(k);
     const pivot = g.clone().lerp(this.putGrab, move);
     pivot.y += Math.sin(Math.PI * Math.min(1, k * 1.1)) * R * ARC;
-    const rot = this.upright ? new THREE.Matrix4().makeRotationY(Math.PI * turn)
+    const rot = this.upright ? new THREE.Matrix4().makeRotationY(this.turnYaw * turn)
       : new THREE.Matrix4().makeRotationAxis(this.front, this.turnSign * Math.PI * turn);
-    return out.makeTranslation(pivot.x, pivot.y, pivot.z).multiply(rot)
+    out.makeTranslation(pivot.x, pivot.y, pivot.z).multiply(rot)
       .multiply(new THREE.Matrix4().makeTranslation(-g.x, -g.y, -g.z)).multiply(worn);
+    if (this.upright && this.pushFront) {
+      // 体の前を通す間は、つばの体の側の縁が顔より前に出るまで前へ運ぶ（回すだけではつばが顔に入った）。半回転の真ん中でいちばん前へ
+      const w = Math.sin(Math.PI * turn);
+      if (w > 0) {
+        const c = this.y.center;
+        let near = Infinity;
+        for (let i = 0; i < 16; i++) {
+          const p = this.hat().brimLocal((i / 16) * Math.PI * 2, 1, this.tmp).applyMatrix4(out);
+          near = Math.min(near, (p.x - c.x) * this.front.x + (p.z - c.z) * this.front.z);
+        }
+        const push = w * Math.max(0, this.faceFront + R * FRONT_GAP - near);
+        out.elements[12] += this.front.x * push;
+        out.elements[14] += this.front.z * push;
+      }
+    }
+    return out;
+  }
+
+  private hat() {
+    return this.y.outfit.hat!;
+  }
+
+  /** 体の前への張り出し（水平。体の中心から）を測り直す。かぶる向きのまま運ぶときの、前へ逃がす量の元 */
+  private measureFront(): void {
+    this.faceFront = bodyExtent(this.y, this.front);
   }
 
   /** 置く所と回す向きを決める（つかむ所を体の三つ編みの側に、つばの根元を地面から PUT_HEIGHT に） */
@@ -469,7 +510,39 @@ export class HatStash {
     this.putGrab.copy(this.spot).addScaledVector(this.side, out).addScaledVector(this.front, R * PUT_AHEAD);
     this.putGrab.y = (this.upright ? UPRIGHT_HEIGHT : PUT_HEIGHT) * scale - flipped.y;
     this.putCenter.copy(this.putGrab).add(flipped).setY(0);
+    if (this.upright) this.yawPlan(worn, flipped);
     this.putRim = hat.brimLocal(0, 1, new THREE.Vector3()).setY(0).length() * scale;
+  }
+
+  /**
+   * かぶる向きのまま運ぶときの、水平に回す角度を決める（turnYaw）。worn：かぶった置き場、to：置いた帽子の、つかむ所から中心への向き。
+   * かぶった帽子の「つかむ所から中心」がその向きへ揃う角度のうち、右回り・左回りの二つから、途中で帽子が体の前を通る方を選ぶ。
+   * 三つ編みを手とみて、帽子は体の前を通して運ぶ（回す向きによっては、帽子が体の横から後ろを回って見えた。指示）。
+   * 拾うときは近い縁をつかむので、置いてある向きとかぶる向きが半回転とは限らない（半回転で決め打つと、持ち上げ始めに帽子が回りながら体へ寄った）
+   */
+  private yawPlan(worn: THREE.Matrix4, to: THREE.Vector3): void {
+    const y = this.y;
+    this.measureFront();
+    const g = this.grabLocal.clone().applyMatrix4(worn);
+    const from = new THREE.Vector3().setFromMatrixPosition(worn).sub(g);
+    let a = Math.atan2(to.x, to.z) - Math.atan2(from.x, from.z);
+    a = Math.atan2(Math.sin(a), Math.cos(a));
+    const other = a - Math.sign(a || 1) * Math.PI * 2;
+    // 途中の帽子の中心が、体の前へどれだけ出ているか（いちばん後ろに来た所で比べる）
+    const ahead = (yaw: number) => {
+      this.turnYaw = yaw;
+      this.pushFront = false;
+      let min = Infinity;
+      const m = new THREE.Matrix4(), p = new THREE.Vector3();
+      for (let i = 1; i < 8; i++) {
+        p.setFromMatrixPosition(this.flipPose(i / 8, worn, m));
+        min = Math.min(min, (p.x - y.center.x) * this.front.x + (p.z - y.center.z) * this.front.z);
+      }
+      this.pushFront = true;
+      return min;
+    };
+    const sa = ahead(a), so = ahead(other);
+    this.turnYaw = so > sa + 1e-3 ? other : a;
   }
 
   /** 身ぶり：始めた向きを向き、三つ編みの側へ lean の割合だけ傾ける */
